@@ -115,7 +115,7 @@ export function BusInfo({
       ref={card}
       role="dialog"
       aria-labelledby={titleId}
-      className="rise-in absolute inset-x-4 bottom-4 z-10 bg-[var(--surface)] p-4 text-[var(--ink)] shadow-lg md:inset-x-auto md:bottom-auto md:left-4 md:top-4 md:w-80"
+      className="rise-in absolute inset-x-3 bottom-[calc(env(safe-area-inset-bottom)+0.75rem)] z-20 max-h-[60dvh] overflow-y-auto bg-[var(--surface)] p-4 text-[var(--ink)] shadow-lg md:inset-x-auto md:bottom-auto md:left-4 md:top-4 md:w-80"
     >
       <div className="flex items-start gap-3">
         {bus?.route_code && (

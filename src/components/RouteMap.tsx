@@ -480,16 +480,17 @@ export function RouteMap({
     'outline-none focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]'
 
   return (
-    <div className="flex h-full flex-col md:flex-row">
-      <aside className="rise-in flex shrink-0 flex-col gap-5 bg-[var(--surface)] p-4 md:w-80 md:gap-8 md:overflow-y-auto md:p-6">
-        <h1 className="m-0 text-2xl font-extrabold leading-none tracking-tight md:text-4xl">
+    <div className="relative h-full md:flex">
+      {/* On phones the panel sits at the bottom of a full-screen map, in thumb reach. */}
+      <aside className="rise-in absolute inset-x-3 bottom-[calc(env(safe-area-inset-bottom)+0.75rem)] z-10 flex flex-col gap-3 bg-[var(--surface)] p-3 shadow-lg md:static md:w-80 md:shrink-0 md:gap-8 md:overflow-y-auto md:p-6 md:shadow-none">
+        <h1 className="m-0 text-lg font-extrabold leading-none tracking-tight md:text-4xl">
           Rute Transjakarta
         </h1>
 
         <div>
           <label
             htmlFor="route-type"
-            className="mb-2 block text-sm font-medium text-[var(--ink-soft)]"
+            className="sr-only text-sm font-medium text-[var(--ink-soft)] md:not-sr-only md:mb-2 md:block"
           >
             Filter rute
           </label>
@@ -497,7 +498,7 @@ export function RouteMap({
             id="route-type"
             value={type}
             onChange={(e) => onTypeChange(e.target.value)}
-            className={`h-12 w-full cursor-pointer bg-[var(--field)] px-3 text-base font-semibold text-[var(--ink)] transition-colors duration-150 hover:bg-[var(--ground)] ${focus}`}
+            className={`h-11 w-full cursor-pointer bg-[var(--field)] px-3 text-base font-semibold text-[var(--ink)] transition-colors duration-150 hover:bg-[var(--ground)] md:h-12 ${focus}`}
           >
             <option value="">Semua rute</option>
             {types.map((t) => (
@@ -536,7 +537,7 @@ export function RouteMap({
                   </>
                 ) : (
                   <span className="flex items-baseline gap-2">
-                    <span className="text-5xl font-extrabold leading-none tracking-tighter tabular-nums md:text-7xl">
+                    <span className="text-xl font-extrabold leading-none tracking-tighter tabular-nums md:text-7xl">
                       {count}
                     </span>
                     <span className="font-semibold">rute di peta</span>
@@ -548,7 +549,7 @@ export function RouteMap({
                   ? 'Tidak ada rute untuk jenis ini. Pilih jenis lain.'
                   : 'Klik garis atau bus di peta untuk melihat detailnya.'}
               </p>
-              <p className="mb-0 mt-5 font-semibold">
+              <p className="mb-0 mt-1 text-sm font-semibold md:mt-5 md:text-base">
                 {live
                   ? `${shownBuses.length} bus aktif di area peta`
                   : 'Menyambungkan data bus…'}
@@ -603,7 +604,7 @@ export function RouteMap({
         </footer>
       </aside>
 
-      <div className="relative min-h-0 flex-1">
+      <div className="relative h-full md:min-w-0 md:flex-1">
         <div
           ref={container}
           // maplibre sets position: relative on its container, so size it

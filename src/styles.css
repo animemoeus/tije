@@ -85,3 +85,8 @@ a:focus-visible {
     animation: none;
   }
 }
+
+/* Keep the zoom buttons below the iPhone notch. */
+.maplibregl-ctrl-top-right {
+  margin-top: env(safe-area-inset-top);
+}
