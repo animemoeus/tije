@@ -2,7 +2,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { RouteMap } from '../components/RouteMap'
 
 // Route type shown when the URL has no ?type.
-const DEFAULT_TYPE = 'Angkutan Umum Integrasi'
+const DEFAULT_TYPE = 'BRT'
 
 export const Route = createFileRoute('/')({
   // No param means DEFAULT_TYPE; 'all' is the explicit "all routes" choice.
