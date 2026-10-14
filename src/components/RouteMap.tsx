@@ -743,16 +743,6 @@ export function RouteMap({
               OpenStreetMap
             </a>
           </p>
-          <p className="m-0 mt-1 text-[11px] text-[var(--ink-soft)] [&_a]:text-[var(--ink-soft)] [&_a]:underline-offset-2 [&_a:hover]:text-[var(--ink)]">
-            Dibuat oleh{' '}
-            <a
-              target="_blank"
-              rel="noopener noreferrer"
-              href="https://www.instagram.com/arter_tendean/"
-            >
-              @arter_tendean
-            </a>
-          </p>
         </footer>
       </aside>
 
