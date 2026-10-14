@@ -623,12 +623,16 @@ export function RouteMap({
         </footer>
       </aside>
 
-      <div className="relative h-full md:min-w-0 md:flex-1">
+      {/* The fade sits here, not on the map container: maplibre adds its own
+          classes there, and a changing className would wipe them. */}
+      <div
+        className={`relative h-full transition-opacity duration-500 motion-reduce:transition-none md:min-w-0 md:flex-1 ${ready ? 'opacity-100' : 'opacity-0'}`}
+      >
         <div
           ref={container}
           // maplibre sets position: relative on its container, so size it
           // with h-full rather than absolute inset-0.
-          className={`h-full w-full transition-opacity duration-500 motion-reduce:transition-none ${ready ? 'opacity-100' : 'opacity-0'}`}
+          className="h-full w-full"
           role="region"
           aria-label="Peta rute Transjakarta"
         />
