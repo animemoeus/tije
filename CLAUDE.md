@@ -9,6 +9,7 @@ A TanStack Start (React 19, SSR via Nitro) app that draws Transjakarta bus route
 ## Working rules
 
 - Write plans in Indonesian. Code, identifiers, comments and docstrings stay in English.
+- Before implementing anything that touches the API (fetches, the WebSocket feed, bus or route fields, limits such as radius or snapshot rate), read the backend source in `../transjakarta-api`: `app/main.py` for endpoints, `app/config.py` for defaults and caps, `app/tracker.py` for bus fields, and `docs/backend/`. Don't infer field names, units, defaults or limits from the frontend alone. The API sends `speed` and `timestamp` as 0, for example, and cuts `radius_km` down to `TJ_MAX_RADIUS_KM`.
 - Run every piece of prose (docs, docstrings, comments, commit messages, PR descriptions) through the `humanizer:humanizer` skill before saving it.
 - Give every function a docstring (JSDoc `/** ... */` in TS/TSX).
 - Use the `ponytail:ponytail` skill on every coding task.

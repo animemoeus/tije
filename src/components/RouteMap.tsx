@@ -5,12 +5,12 @@ import 'maplibre-gl/dist/maplibre-gl.css'
 // maplibre resolves its worker next to its own module, which breaks once Vite
 // pre-bundles it; let Vite bundle the worker and hand maplibre the URL.
 import workerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url'
+import { API } from '#/api'
+import { BusInfo } from './BusInfo'
 
-const API =
-  import.meta.env.VITE_API_URL ?? 'http://transjakarta-api.animemoe.us'
 const WS = API.replace(/^http/, 'ws')
-// The API caps the live bus radius at 20 km.
-const MAX_RADIUS_KM = 20
+// The API caps the live bus radius at 30 km (TJ_MAX_RADIUS_KM).
+const MAX_RADIUS_KM = 30
 
 type Route = {
   route_code: string
@@ -144,13 +144,14 @@ function headingArrow(color: string) {
 }
 
 // Live bus feed for the whole map area: centred on it, reaching its corners.
+// mode=delta sends one snapshot, then only the buses that changed.
 function busFeedUrl([[w, s], [e, n]]: [[number, number], [number, number]]) {
   const lat = (s + n) / 2
   const lon = (w + e) / 2
   const dy = ((n - s) / 2) * KM_PER_DEG
   const dx = ((e - w) / 2) * KM_PER_DEG * Math.cos((lat * Math.PI) / 180)
   const radius = Math.min(MAX_RADIUS_KM, Math.ceil(Math.hypot(dx, dy)))
-  return `${WS}/ws?lat=${lat.toFixed(4)}&lon=${lon.toFixed(4)}&radius_km=${radius}`
+  return `${WS}/ws?lat=${lat.toFixed(4)}&lon=${lon.toFixed(4)}&radius_km=${radius}&mode=delta`
 }
 
 export function RouteMap({
@@ -173,6 +174,10 @@ export function RouteMap({
   const [buses, setBuses] = useState<Array<Bus>>([])
   const [live, setLive] = useState(false)
   const [feedUrl, setFeedUrl] = useState('')
+  const [selectedBus, setSelectedBus] = useState<string | null>(null)
+
+  // A new route filter may hide the selected bus, so close its card.
+  useEffect(() => setSelectedBus(null), [type])
 
   useEffect(() => {
     let cancelled = false
@@ -342,19 +347,20 @@ export function RouteMap({
             .addTo(m)
         }
         m.on('click', 'routes', (e) => {
+          // A click on a bus over a route belongs to the bus card only.
+          if (m.queryRenderedFeatures(e.point, { layers: ['buses'] }).length)
+            return
           const p = e.features?.[0]?.properties
           if (p) popup(e.lngLat, String(p.code), String(p.name))
         })
         m.on('click', 'buses', (e) => {
           const p = e.features?.[0]?.properties
-          if (!p) return
-          // Buses sit on top of routes; don't also open the route popup.
-          e.originalEvent.stopPropagation()
-          popup(
-            e.lngLat,
-            `${p.code} · ${p.headsign}`,
-            `${p.no} · berikutnya ${p.next}`,
-          )
+          if (p) setSelectedBus(String(p.no))
+        })
+        // A click on the map away from any bus closes the bus card.
+        m.on('click', (e) => {
+          if (!m.queryRenderedFeatures(e.point, { layers: ['buses'] }).length)
+            setSelectedBus(null)
         })
         for (const layer of ['routes', 'buses']) {
           m.on(
@@ -380,14 +386,33 @@ export function RouteMap({
     let retry: ReturnType<typeof setTimeout> | undefined
     let closed = false
     const connect = () => {
+      // Buses by body number for this connection only, so a reconnect
+      // starts clean from the server's first snapshot.
+      const fleet = new Map<string, Bus>()
       ws = new WebSocket(feedUrl)
       ws.onopen = () => setLive(true)
       ws.onmessage = (e) => {
         const msg = JSON.parse(String(e.data)) as {
           type: string
           buses?: Array<Bus>
+          upsert?: Array<Partial<Bus> & { bus_body_no: string }>
+          remove?: Array<string>
         }
-        if (msg.type === 'snapshot' && msg.buses) setBuses(msg.buses)
+        if (msg.type === 'snapshot' && msg.buses) {
+          // The first message, or a resync after this client fell behind.
+          fleet.clear()
+          for (const b of msg.buses) fleet.set(b.bus_body_no, b)
+        } else if (msg.type === 'delta') {
+          for (const no of msg.remove ?? []) fleet.delete(no)
+          // New buses come whole; known ones only with the fields that changed.
+          for (const u of msg.upsert ?? []) {
+            fleet.set(u.bus_body_no, {
+              ...fleet.get(u.bus_body_no),
+              ...u,
+            } as Bus)
+          }
+        } else return
+        setBuses([...fleet.values()])
       }
       ws.onclose = () => {
         setLive(false)
@@ -532,7 +557,7 @@ export function RouteMap({
           )}
         </div>
         <footer className="md:mt-auto">
-          <p className="m-0 text-sm text-[var(--ink-soft)] [&_a]:text-[var(--ink-soft)] [&_a]:underline-offset-2 [&_a:hover]:text-[var(--ink)]">
+          <p className="m-0 text-[11px] leading-snug text-[var(--ink-soft)] [&_a]:text-[var(--ink-soft)] [&_a]:underline-offset-2 [&_a:hover]:text-[var(--ink)]">
             <a
               target="_blank"
               rel="noopener noreferrer"
@@ -565,15 +590,32 @@ export function RouteMap({
               OpenStreetMap
             </a>
           </p>
+          <p className="m-0 mt-1 text-[11px] text-[var(--ink-soft)] [&_a]:text-[var(--ink-soft)] [&_a]:underline-offset-2 [&_a:hover]:text-[var(--ink)]">
+            Dibuat oleh{' '}
+            <a
+              target="_blank"
+              rel="noopener noreferrer"
+              href="https://www.instagram.com/arter_tendean/"
+            >
+              @arter_tendean
+            </a>
+          </p>
         </footer>
       </aside>
 
-      <div
-        ref={container}
-        className="min-h-0 flex-1"
-        role="region"
-        aria-label="Peta rute Transjakarta"
-      />
+      <div className="relative min-h-0 flex-1">
+        <div
+          ref={container}
+          // maplibre sets position: relative on its container, so size it
+          // with h-full rather than absolute inset-0.
+          className="h-full w-full"
+          role="region"
+          aria-label="Peta rute Transjakarta"
+        />
+        {selectedBus && (
+          <BusInfo busNo={selectedBus} onClose={() => setSelectedBus(null)} />
+        )}
+      </div>
     </div>
   )
 }
