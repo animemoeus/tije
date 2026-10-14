@@ -1,5 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { GeoJSONSource, Map as MlMap } from 'maplibre-gl'
+import type {
+  ExpressionSpecification,
+  GeoJSONSource,
+  Map as MlMap,
+} from 'maplibre-gl'
 import type { FeatureCollection } from 'geojson'
 import 'maplibre-gl/dist/maplibre-gl.css'
 // maplibre resolves its worker next to its own module, which breaks once Vite
@@ -16,12 +20,17 @@ type Route = {
   route_code: string
   route_name: string
   route_color: string
-  directions: Array<{ path: Array<[number, number]> }>
+  directions: Array<{
+    trip_id: string | null
+    headsign: string | null
+    path: Array<[number, number]>
+  }>
 }
 type RouteType = { type: string; routes: number }
 type Bus = {
   bus_body_no: string
   route_code: string
+  trip_id: string | null
   trip_headsign: string
   route_color: string
   route_text_color: string
@@ -45,6 +54,20 @@ const ARROW_ZOOM = [14, 14.5]
 const LABEL_ZOOM = [13, 14]
 // Route lines stay faint so the buses on top stand out.
 const ROUTE_OPACITY = 0.25
+// While a bus is selected, everything except it and its route ahead fades to
+// these.
+const DIM_ROUTE_OPACITY = 0.08
+const DIM_BUS_OPACITY = 0.15
+// The route code fades in over the last half zoom level before LABEL_ZOOM[1].
+const LABEL_FADE = [LABEL_ZOOM[1] - 0.5, LABEL_ZOOM[1]]
+
+/** Opacity going from 0 at zoom `from` to `full` at zoom `to`. */
+function fadeIn(
+  [from, to]: Array<number>,
+  full: number | ExpressionSpecification = 1,
+): ExpressionSpecification {
+  return ['interpolate', ['linear'], ['zoom'], from, 0, to, full]
+}
 
 /**
  * Label, text size and circle radius (px) for a bus marker, so the label fits
@@ -103,6 +126,41 @@ function toGeoJSON(routes: Array<Route>): FeatureCollection {
 }
 
 const KM_PER_DEG = 111.32
+
+/**
+ * The part of a bus's route still ahead of it, as [lon, lat] from the bus to
+ * the end of its direction. The direction is the one with the bus's trip_id;
+ * short trips have their own trip_id, so then the one with its headsign, and
+ * failing that the one passing closest to the bus.
+ */
+function pathAhead(bus: Bus, routes: Array<Route>): Array<[number, number]> {
+  const dirs =
+    routes.find((r) => r.route_code === bus.route_code)?.directions ?? []
+  // ponytail: plain degree distance to the nearest path point; fine at
+  // Jakarta's latitude. A loop that runs the same road twice can be cut at
+  // the wrong pass; next_stops would pick the right one.
+  const nearest = (path: Array<[number, number]>) => {
+    let best = { i: -1, d: Infinity }
+    path.forEach(([lat, lon], i) => {
+      const d = (lat - bus.latitude) ** 2 + (lon - bus.longitude) ** 2
+      if (d < best.d) best = { i, d }
+    })
+    return best
+  }
+  const dir =
+    dirs.find((d) => bus.trip_id && d.trip_id === bus.trip_id) ??
+    dirs.find((d) => bus.trip_headsign && d.headsign === bus.trip_headsign) ??
+    dirs.reduce<(typeof dirs)[number] | undefined>(
+      (a, d) => (!a || nearest(d.path).d < nearest(a.path).d ? d : a),
+      undefined,
+    )
+  if (!dir) return []
+  const { i } = nearest(dir.path)
+  return [
+    [bus.longitude, bus.latitude],
+    ...dir.path.slice(i + 1).map(([lat, lon]): [number, number] => [lon, lat]),
+  ]
+}
 
 // Box around every path point, widened by `km` on each side, as [[w, s], [e, n]].
 function boundsAround(
@@ -168,6 +226,7 @@ export function RouteMap({
   const container = useRef<HTMLDivElement>(null)
   const map = useRef<MlMap | null>(null)
   const data = useRef(toGeoJSON([]))
+  const routesRef = useRef<Array<Route>>([])
   const busData = useRef(busesToGeoJSON([]))
   const [ready, setReady] = useState(false)
   const [types, setTypes] = useState<Array<RouteType>>([])
@@ -248,6 +307,15 @@ export function RouteMap({
               },
             },
           })
+          // The selected bus's route from where it is to where it's going.
+          m.addSource('focus', { type: 'geojson', data: toGeoJSON([]) })
+          m.addLayer({
+            id: 'route-ahead',
+            type: 'line',
+            source: 'focus',
+            layout: { 'line-cap': 'round', 'line-join': 'round' },
+            paint: { 'line-color': ['get', 'color'], 'line-width': 5 },
+          })
           m.addSource('buses', { type: 'geojson', data: busData.current })
           // Each bus is a circle in the route colour with its route code.
           // Zoomed out, buses are too close for that (see LABEL_ZOOM), so
@@ -296,15 +364,7 @@ export function RouteMap({
             },
             paint: {
               'text-color': ['get', 'textColor'],
-              'text-opacity': [
-                'interpolate',
-                ['linear'],
-                ['zoom'],
-                LABEL_ZOOM[1] - 0.5,
-                0,
-                LABEL_ZOOM[1],
-                1,
-              ],
+              'text-opacity': fadeIn(LABEL_FADE),
             },
           })
           m.addLayer({
@@ -332,12 +392,7 @@ export function RouteMap({
               'icon-ignore-placement': true,
             },
             paint: {
-              'icon-opacity': [
-                'interpolate',
-                ['linear'],
-                ['zoom'],
-                ...ARROW_ZOOM.flatMap((z, i) => [z, i]),
-              ],
+              'icon-opacity': fadeIn(ARROW_ZOOM),
             },
           })
           setReady(true)
@@ -449,6 +504,83 @@ export function RouteMap({
     map.current?.getSource<GeoJSONSource>('buses')?.setData(busData.current)
   }, [shownBuses])
 
+  const focusBus = shownBuses.find((b) => b.bus_body_no === selectedBus)
+  const focusPath = useMemo(
+    () => (focusBus ? pathAhead(focusBus, routesRef.current) : []),
+    [focusBus],
+  )
+  // Read by the camera effect, which runs only when the selection changes.
+  const focusRef = useRef({ bus: focusBus, path: focusPath })
+  focusRef.current = { bus: focusBus, path: focusPath }
+
+  // Draw the route ahead of the selected bus; it shortens as the bus moves.
+  useEffect(() => {
+    map.current?.getSource<GeoJSONSource>('focus')?.setData({
+      type: 'FeatureCollection',
+      features:
+        focusBus && focusPath.length > 1
+          ? [
+              {
+                type: 'Feature',
+                properties: { color: `#${focusBus.route_color || '555555'}` },
+                geometry: { type: 'LineString', coordinates: focusPath },
+              },
+            ]
+          : [],
+    })
+  }, [focusBus, focusPath])
+
+  // Fade every other route and bus while one is selected, and bring the bus
+  // and the rest of its trip into view.
+  useEffect(() => {
+    const m = map.current
+    if (!m || !ready) return
+    const on: ExpressionSpecification = ['==', ['get', 'no'], selectedBus ?? '']
+    const dim: number | ExpressionSpecification = selectedBus
+      ? ['case', on, 1, DIM_BUS_OPACITY]
+      : 1
+    m.setPaintProperty(
+      'routes',
+      'line-opacity',
+      selectedBus ? DIM_ROUTE_OPACITY : ROUTE_OPACITY,
+    )
+    m.setPaintProperty('buses', 'circle-opacity', dim)
+    m.setPaintProperty('buses', 'circle-stroke-opacity', dim)
+    m.setPaintProperty('bus-label', 'text-opacity', fadeIn(LABEL_FADE, dim))
+    m.setPaintProperty('bus-heading', 'icon-opacity', fadeIn(ARROW_ZOOM, dim))
+    // The selected bus is drawn last, on top of the others.
+    const top: ExpressionSpecification | undefined = selectedBus
+      ? ['case', on, 1, 0]
+      : undefined
+    m.setLayoutProperty('buses', 'circle-sort-key', top)
+    m.setLayoutProperty('bus-label', 'symbol-sort-key', top)
+    m.setLayoutProperty('bus-heading', 'symbol-sort-key', top)
+
+    const { bus, path } = focusRef.current
+    if (!bus) return
+    // Keep clear of the BusInfo card: top left on desktop, bottom on phones.
+    const desktop = matchMedia('(min-width: 768px)').matches
+    const padding = desktop
+      ? { top: 60, right: 60, bottom: 60, left: 380 }
+      : { top: 40, right: 40, bottom: innerHeight * 0.45, left: 40 }
+    const duration = matchMedia('(prefers-reduced-motion: reduce)').matches
+      ? 0
+      : 600
+    if (path.length > 1) {
+      const lons = path.map(([lon]) => lon)
+      const lats = path.map(([, lat]) => lat)
+      m.fitBounds(
+        [
+          [Math.min(...lons), Math.min(...lats)],
+          [Math.max(...lons), Math.max(...lats)],
+        ],
+        { padding, duration, maxZoom: 16 },
+      )
+    } else {
+      m.easeTo({ center: [bus.longitude, bus.latitude], padding, duration })
+    }
+  }, [selectedBus, ready])
+
   useEffect(() => {
     fetch(`${API}/route-types`)
       .then((r) => (r.ok ? r.json() : Promise.reject(r)))
@@ -469,6 +601,7 @@ export function RouteMap({
       .then((r) => (r.ok ? r.json() : Promise.reject(r)))
       .then((d: { routes: Array<Route> }) => {
         data.current = toGeoJSON(d.routes)
+        routesRef.current = d.routes
         const m = map.current
         m?.getSource<GeoJSONSource>('routes')?.setData(data.current)
         m?.setPaintProperty('routes', 'line-opacity', ROUTE_OPACITY)
