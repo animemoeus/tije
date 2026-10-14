@@ -38,6 +38,11 @@ type Bus = {
 // they're ~31 px apart, enough room for an arrow between two buses. Further
 // out the arrows would only pile up on top of each other.
 const ARROW_ZOOM = [14, 14.5]
+// Same measurement: at 13 buses are ~11 px apart, so full circles would pile
+// up. Below LABEL_ZOOM[0] buses are small dots; they grow to full circles by
+// LABEL_ZOOM[1], where the circles separate, and the route code fades in over
+// the last half zoom level.
+const LABEL_ZOOM = [13, 14]
 
 /**
  * Text size and circle radius (px) for a bus marker, so the route code fits
@@ -230,14 +235,34 @@ export function RouteMap({
           })
           m.addSource('buses', { type: 'geojson', data: busData.current })
           // Each bus is a circle in the route colour with its route code.
+          // Zoomed out, buses are too close for that (see LABEL_ZOOM), so
+          // they shrink to small dots and the code is hidden.
           m.addLayer({
             id: 'buses',
             type: 'circle',
             source: 'buses',
             paint: {
-              'circle-radius': ['get', 'radius'],
+              'circle-radius': [
+                'interpolate',
+                ['linear'],
+                ['zoom'],
+                10,
+                2.5,
+                LABEL_ZOOM[0],
+                5,
+                LABEL_ZOOM[1],
+                ['get', 'radius'],
+              ],
               'circle-color': ['get', 'color'],
-              'circle-stroke-width': 2,
+              'circle-stroke-width': [
+                'interpolate',
+                ['linear'],
+                ['zoom'],
+                10,
+                0.75,
+                LABEL_ZOOM[1],
+                2,
+              ],
               'circle-stroke-color': '#ffffff',
             },
           })
@@ -245,6 +270,8 @@ export function RouteMap({
             id: 'bus-label',
             type: 'symbol',
             source: 'buses',
+            // Text waits until the circle is almost big enough to hold it.
+            minzoom: LABEL_ZOOM[1] - 0.5,
             layout: {
               'text-field': ['get', 'code'],
               'text-font': ['Noto Sans Bold'],
@@ -252,7 +279,18 @@ export function RouteMap({
               'text-allow-overlap': true,
               'text-ignore-placement': true,
             },
-            paint: { 'text-color': ['get', 'textColor'] },
+            paint: {
+              'text-color': ['get', 'textColor'],
+              'text-opacity': [
+                'interpolate',
+                ['linear'],
+                ['zoom'],
+                LABEL_ZOOM[1] - 0.5,
+                0,
+                LABEL_ZOOM[1],
+                1,
+              ],
+            },
           })
           m.addLayer({
             id: 'bus-heading',
