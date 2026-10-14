@@ -6,7 +6,8 @@ import 'maplibre-gl/dist/maplibre-gl.css'
 // pre-bundles it; let Vite bundle the worker and hand maplibre the URL.
 import workerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url'
 
-const API = import.meta.env.VITE_API_URL ?? 'http://transjakarta-api.animemoe.us'
+const API =
+  import.meta.env.VITE_API_URL ?? 'http://transjakarta-api.animemoe.us'
 const WS = API.replace(/^http/, 'ws')
 // The API caps the live bus radius at 20 km.
 const MAX_RADIUS_KM = 20
@@ -23,11 +24,30 @@ type Bus = {
   route_code: string
   trip_headsign: string
   route_color: string
+  route_text_color: string
   type: string
   latitude: number
   longitude: number
   bearing: number
   next_stop_name: string
+}
+
+// Heading arrows fade in between these zooms. Measured on 3,564 live buses
+// within 20 km (bus stacks at pools and haltes merged): at zoom 14 nearby
+// buses sit ~22 px apart, so the 20 px circles stop overlapping, and at 14.5
+// they're ~31 px apart, enough room for an arrow between two buses. Further
+// out the arrows would only pile up on top of each other.
+const ARROW_ZOOM = [14, 14.5]
+
+/**
+ * Text size and circle radius (px) for a bus marker, so the route code fits
+ * inside the circle. Long codes like JAK.10 get smaller text; bold text is
+ * about 0.6em wide per character.
+ */
+function markerSize(code: string) {
+  const textSize = code.length <= 3 ? 11 : 9
+  const radius = Math.max(10, code.length * textSize * 0.3 + 4)
+  return { textSize, radius }
 }
 
 function busesToGeoJSON(buses: Array<Bus>): FeatureCollection {
@@ -40,8 +60,10 @@ function busesToGeoJSON(buses: Array<Bus>): FeatureCollection {
         headsign: b.trip_headsign,
         no: b.bus_body_no,
         next: b.next_stop_name,
-        bearing: b.bearing,
         color: `#${b.route_color || '555555'}`,
+        textColor: `#${b.route_text_color || 'ffffff'}`,
+        bearing: b.bearing,
+        ...markerSize(b.route_code),
       },
       geometry: {
         type: 'Point' as const,
@@ -92,20 +114,27 @@ function boundsAround(
   ]
 }
 
-// White arrow pointing north, drawn at 2x; the map rotates it by bearing.
-function headingArrow() {
+/**
+ * Chevron pointing north in the route colour with a white rim, drawn at 2x;
+ * the map rotates it by bearing.
+ */
+function headingArrow(color: string) {
   const size = 24
   const c = document.createElement('canvas')
   c.width = c.height = size
   const ctx = c.getContext('2d')!
-  ctx.fillStyle = '#ffffff'
   ctx.beginPath()
-  ctx.moveTo(12, 3)
-  ctx.lineTo(19, 19)
-  ctx.lineTo(12, 15)
-  ctx.lineTo(5, 19)
-  ctx.closePath()
-  ctx.fill()
+  ctx.moveTo(6, 15)
+  ctx.lineTo(12, 8)
+  ctx.lineTo(18, 15)
+  ctx.lineCap = 'round'
+  ctx.lineJoin = 'round'
+  ctx.lineWidth = 7
+  ctx.strokeStyle = '#ffffff'
+  ctx.stroke()
+  ctx.lineWidth = 3.5
+  ctx.strokeStyle = color
+  ctx.stroke()
   return ctx.getImageData(0, 0, size, size)
 }
 
@@ -152,8 +181,20 @@ export function RouteMap({
           center: [106.8456, -6.2088],
           zoom: 11,
           attributionControl: false,
+          // Keep north up: there's no compass to reset rotation, and the
+          // heading arrows are placed for an unrotated map.
+          dragRotate: false,
+          pitchWithRotate: false,
         })
+        m.touchZoomRotate.disableRotation()
         m.addControl(new NavigationControl({ showCompass: false }), 'top-right')
+        // Draw the arrow for each route colour the first time a bus needs it.
+        m.on('styleimagemissing', ({ id }: { id: string }) => {
+          if (!id.startsWith('arrow-') || m.hasImage(id)) return
+          m.addImage(id, headingArrow(id.slice('arrow-'.length)), {
+            pixelRatio: 2,
+          })
+        })
         m.on('load', () => {
           // Positron is grey; give water and greenery their natural colours.
           m.setPaintProperty('water', 'fill-color', '#c4dbe7')
@@ -188,28 +229,62 @@ export function RouteMap({
             },
           })
           m.addSource('buses', { type: 'geojson', data: busData.current })
+          // Each bus is a circle in the route colour with its route code.
           m.addLayer({
             id: 'buses',
             type: 'circle',
             source: 'buses',
             paint: {
-              'circle-radius': 9,
+              'circle-radius': ['get', 'radius'],
               'circle-color': ['get', 'color'],
               'circle-stroke-width': 2,
               'circle-stroke-color': '#ffffff',
             },
           })
-          m.addImage('heading', headingArrow(), { pixelRatio: 2 })
+          m.addLayer({
+            id: 'bus-label',
+            type: 'symbol',
+            source: 'buses',
+            layout: {
+              'text-field': ['get', 'code'],
+              'text-font': ['Noto Sans Bold'],
+              'text-size': ['get', 'textSize'],
+              'text-allow-overlap': true,
+              'text-ignore-placement': true,
+            },
+            paint: { 'text-color': ['get', 'textColor'] },
+          })
           m.addLayer({
             id: 'bus-heading',
             type: 'symbol',
             source: 'buses',
+            minzoom: ARROW_ZOOM[0],
             layout: {
-              'icon-image': 'heading',
+              'icon-image': ['concat', 'arrow-', ['get', 'color']],
               'icon-rotate': ['get', 'bearing'],
               'icon-rotation-alignment': 'map',
+              // Just outside the circle, straight "up" from the bus; the map
+              // turns it with icon-rotate. Built from a number because
+              // maplibre turns array properties into JSON strings.
+              'icon-offset': [
+                'interpolate',
+                ['linear'],
+                ['+', ['get', 'radius'], 5],
+                0,
+                ['literal', [0, 0]],
+                100,
+                ['literal', [0, -100]],
+              ],
               'icon-allow-overlap': true,
               'icon-ignore-placement': true,
+            },
+            paint: {
+              'icon-opacity': [
+                'interpolate',
+                ['linear'],
+                ['zoom'],
+                ...ARROW_ZOOM.flatMap((z, i) => [z, i]),
+              ],
             },
           })
           setReady(true)
