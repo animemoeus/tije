@@ -1,6 +1,6 @@
 # tije
 
-Transjakarta routes and live buses on a map, live at https://tije.info. Now you can watch your bus not come instead of just waiting for it.
+Transjakarta routes and live buses on a map, live at https://tije.info. Now you can watch your bus come instead of just waiting for it.
 
 ## Fine print
 
