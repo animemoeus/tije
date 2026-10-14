@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { GeoJSONSource, Map as MlMap } from 'maplibre-gl'
 import type { FeatureCollection } from 'geojson'
 import 'maplibre-gl/dist/maplibre-gl.css'
@@ -7,6 +7,9 @@ import 'maplibre-gl/dist/maplibre-gl.css'
 import workerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url'
 
 const API = import.meta.env.VITE_API_URL ?? 'http://localhost:8000'
+const WS = API.replace(/^http/, 'ws')
+// The API caps the live bus radius at 20 km.
+const MAX_RADIUS_KM = 20
 
 type Route = {
   route_code: string
@@ -15,6 +18,38 @@ type Route = {
   directions: Array<{ path: Array<[number, number]> }>
 }
 type RouteType = { type: string; routes: number }
+type Bus = {
+  bus_body_no: string
+  route_code: string
+  trip_headsign: string
+  route_color: string
+  type: string
+  latitude: number
+  longitude: number
+  bearing: number
+  next_stop_name: string
+}
+
+function busesToGeoJSON(buses: Array<Bus>): FeatureCollection {
+  return {
+    type: 'FeatureCollection',
+    features: buses.map((b) => ({
+      type: 'Feature' as const,
+      properties: {
+        code: b.route_code,
+        headsign: b.trip_headsign,
+        no: b.bus_body_no,
+        next: b.next_stop_name,
+        bearing: b.bearing,
+        color: `#${b.route_color || '555555'}`,
+      },
+      geometry: {
+        type: 'Point' as const,
+        coordinates: [b.longitude, b.latitude],
+      },
+    })),
+  }
+}
 
 function toGeoJSON(routes: Array<Route>): FeatureCollection {
   return {
@@ -57,6 +92,33 @@ function boundsAround(
   ]
 }
 
+// White arrow pointing north, drawn at 2x; the map rotates it by bearing.
+function headingArrow() {
+  const size = 24
+  const c = document.createElement('canvas')
+  c.width = c.height = size
+  const ctx = c.getContext('2d')!
+  ctx.fillStyle = '#ffffff'
+  ctx.beginPath()
+  ctx.moveTo(12, 3)
+  ctx.lineTo(19, 19)
+  ctx.lineTo(12, 15)
+  ctx.lineTo(5, 19)
+  ctx.closePath()
+  ctx.fill()
+  return ctx.getImageData(0, 0, size, size)
+}
+
+// Live bus feed for the whole map area: centred on it, reaching its corners.
+function busFeedUrl([[w, s], [e, n]]: [[number, number], [number, number]]) {
+  const lat = (s + n) / 2
+  const lon = (w + e) / 2
+  const dy = ((n - s) / 2) * KM_PER_DEG
+  const dx = ((e - w) / 2) * KM_PER_DEG * Math.cos((lat * Math.PI) / 180)
+  const radius = Math.min(MAX_RADIUS_KM, Math.ceil(Math.hypot(dx, dy)))
+  return `${WS}/ws?lat=${lat.toFixed(4)}&lon=${lon.toFixed(4)}&radius_km=${radius}`
+}
+
 export function RouteMap({
   type,
   onTypeChange,
@@ -67,11 +129,16 @@ export function RouteMap({
   const container = useRef<HTMLDivElement>(null)
   const map = useRef<MlMap | null>(null)
   const data = useRef(toGeoJSON([]))
+  const busData = useRef(busesToGeoJSON([]))
   const [ready, setReady] = useState(false)
   const [types, setTypes] = useState<Array<RouteType>>([])
   const [status, setStatus] = useState<'loading' | 'error' | 'done'>('loading')
   const [attempt, setAttempt] = useState(0)
   const [count, setCount] = useState(0)
+  const [routeCodes, setRouteCodes] = useState<Set<string>>(new Set())
+  const [buses, setBuses] = useState<Array<Bus>>([])
+  const [live, setLive] = useState(false)
+  const [feedUrl, setFeedUrl] = useState('')
 
   useEffect(() => {
     let cancelled = false
@@ -120,26 +187,70 @@ export function RouteMap({
               'line-opacity': 0.25,
             },
           })
+          m.addSource('buses', { type: 'geojson', data: busData.current })
+          m.addLayer({
+            id: 'buses',
+            type: 'circle',
+            source: 'buses',
+            paint: {
+              'circle-radius': 9,
+              'circle-color': ['get', 'color'],
+              'circle-stroke-width': 2,
+              'circle-stroke-color': '#ffffff',
+            },
+          })
+          m.addImage('heading', headingArrow(), { pixelRatio: 2 })
+          m.addLayer({
+            id: 'bus-heading',
+            type: 'symbol',
+            source: 'buses',
+            layout: {
+              'icon-image': 'heading',
+              'icon-rotate': ['get', 'bearing'],
+              'icon-rotation-alignment': 'map',
+              'icon-allow-overlap': true,
+              'icon-ignore-placement': true,
+            },
+          })
           setReady(true)
         })
-        m.on('click', 'routes', (e) => {
-          const p = e.features?.[0]?.properties
-          if (!p) return
+        const popup = (
+          at: Parameters<InstanceType<typeof Popup>['setLngLat']>[0],
+          title: string,
+          body: string,
+        ) => {
           const el = document.createElement('div')
           el.innerHTML = '<strong></strong><span></span>'
-          el.querySelector('strong')!.textContent = String(p.code)
-          el.querySelector('span')!.textContent = String(p.name)
+          el.querySelector('strong')!.textContent = title
+          el.querySelector('span')!.textContent = body
           new Popup({ closeButton: false, maxWidth: '260px' })
-            .setLngLat(e.lngLat)
+            .setLngLat(at)
             .setDOMContent(el)
             .addTo(m)
+        }
+        m.on('click', 'routes', (e) => {
+          const p = e.features?.[0]?.properties
+          if (p) popup(e.lngLat, String(p.code), String(p.name))
         })
-        m.on(
-          'mouseenter',
-          'routes',
-          () => (m.getCanvas().style.cursor = 'pointer'),
-        )
-        m.on('mouseleave', 'routes', () => (m.getCanvas().style.cursor = ''))
+        m.on('click', 'buses', (e) => {
+          const p = e.features?.[0]?.properties
+          if (!p) return
+          // Buses sit on top of routes; don't also open the route popup.
+          e.originalEvent.stopPropagation()
+          popup(
+            e.lngLat,
+            `${p.code} · ${p.headsign}`,
+            `${p.no} · berikutnya ${p.next}`,
+          )
+        })
+        for (const layer of ['routes', 'buses']) {
+          m.on(
+            'mouseenter',
+            layer,
+            () => (m.getCanvas().style.cursor = 'pointer'),
+          )
+          m.on('mouseleave', layer, () => (m.getCanvas().style.cursor = ''))
+        }
         map.current = m
       },
     )
@@ -149,6 +260,46 @@ export function RouteMap({
       map.current = null
     }
   }, [])
+
+  useEffect(() => {
+    if (!feedUrl) return
+    let ws: WebSocket | undefined
+    let retry: ReturnType<typeof setTimeout> | undefined
+    let closed = false
+    const connect = () => {
+      ws = new WebSocket(feedUrl)
+      ws.onopen = () => setLive(true)
+      ws.onmessage = (e) => {
+        const msg = JSON.parse(String(e.data)) as {
+          type: string
+          buses?: Array<Bus>
+        }
+        if (msg.type === 'snapshot' && msg.buses) setBuses(msg.buses)
+      }
+      ws.onclose = () => {
+        setLive(false)
+        if (!closed) retry = setTimeout(connect, 3000)
+      }
+    }
+    connect()
+    return () => {
+      closed = true
+      clearTimeout(retry)
+      ws?.close()
+      setLive(false)
+    }
+  }, [feedUrl])
+
+  // Only buses on the routes currently drawn.
+  const shownBuses = useMemo(
+    () => buses.filter((b) => routeCodes.has(b.route_code)),
+    [buses, routeCodes],
+  )
+
+  useEffect(() => {
+    busData.current = busesToGeoJSON(shownBuses)
+    map.current?.getSource<GeoJSONSource>('buses')?.setData(busData.current)
+  }, [shownBuses])
 
   useEffect(() => {
     fetch(`${API}/route-types`)
@@ -175,8 +326,10 @@ export function RouteMap({
         if (m && b) {
           m.setMaxBounds(b)
           m.fitBounds(b, { padding: 0, duration: 600 })
+          setFeedUrl(busFeedUrl(b))
         }
         setCount(d.routes.length)
+        setRouteCodes(new Set(d.routes.map((r) => r.route_code)))
         setStatus('done')
       })
       .catch(() => {
@@ -255,7 +408,12 @@ export function RouteMap({
               <p className="mb-0 mt-3 hidden text-sm text-[var(--ink-soft)] md:block">
                 {status === 'done' && count === 0
                   ? 'Tidak ada rute untuk jenis ini. Pilih jenis lain.'
-                  : 'Klik garis di peta untuk melihat kode dan nama rute.'}
+                  : 'Klik garis atau bus di peta untuk melihat detailnya.'}
+              </p>
+              <p className="mb-0 mt-5 font-semibold">
+                {live
+                  ? `${shownBuses.length} bus aktif di area peta`
+                  : 'Menyambungkan data bus…'}
               </p>
             </>
           )}
