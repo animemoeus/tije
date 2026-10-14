@@ -73,6 +73,30 @@ a:focus-visible {
   animation: rise-in 500ms cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
+/* Panel sections rise in one after another. */
+.stagger > * {
+  animation: rise-in 500ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.stagger > :nth-child(2) {
+  animation-delay: 60ms;
+}
+.stagger > :nth-child(3) {
+  animation-delay: 120ms;
+}
+.stagger > :nth-child(4) {
+  animation-delay: 180ms;
+}
+
+/* Content that swaps in place, such as a spinner giving way to data. */
+.fade-in {
+  animation: fade-in 250ms ease-out both;
+}
+
+/* Only the content moves: maplibre positions .maplibregl-popup with transform. */
+.maplibregl-popup-content {
+  animation: pop-in 200ms ease-out both;
+}
+
 @keyframes rise-in {
   from {
     opacity: 0;
@@ -80,8 +104,24 @@ a:focus-visible {
   }
 }
 
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .rise-in {
+  .rise-in,
+  .stagger > *,
+  .fade-in,
+  .maplibregl-popup-content {
     animation: none;
   }
 }

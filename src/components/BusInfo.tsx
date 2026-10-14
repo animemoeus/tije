@@ -161,10 +161,10 @@ export function BusInfo({
           </p>
         )}
         {status === 'gone' && (
-          <p className="m-0">Bus ini sudah tidak terlacak.</p>
+          <p className="fade-in m-0">Bus ini sudah tidak terlacak.</p>
         )}
         {status === 'error' && (
-          <div role="alert" className="flex flex-col items-start gap-3">
+          <div role="alert" className="fade-in flex flex-col items-start gap-3">
             <p className="m-0">Gagal memuat informasi bus.</p>
             <button
               type="button"
@@ -176,7 +176,7 @@ export function BusInfo({
           </div>
         )}
         {status === 'done' && bus && (
-          <dl className="m-0 grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
+          <dl className="fade-in m-0 grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
             <dt className="text-[var(--ink-soft)]">Nomor bus</dt>
             <dd className="m-0 font-semibold">{bus.bus_body_no}</dd>
             {bus.type && (

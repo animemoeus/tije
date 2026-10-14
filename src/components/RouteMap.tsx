@@ -43,16 +43,20 @@ const ARROW_ZOOM = [14, 14.5]
 // LABEL_ZOOM[1], where the circles separate, and the route code fades in over
 // the last half zoom level.
 const LABEL_ZOOM = [13, 14]
+// Route lines stay faint so the buses on top stand out.
+const ROUTE_OPACITY = 0.25
 
 /**
- * Text size and circle radius (px) for a bus marker, so the route code fits
- * inside the circle. Long codes like JAK.10 get smaller text; bold text is
- * about 0.6em wide per character.
+ * Label, text size and circle radius (px) for a bus marker, so the label fits
+ * inside the circle. Every Mikrotrans code starts with "JAK.", so the marker
+ * drops it (JAK.43B shows as 43B); the full code stays in the popup. Bold
+ * text is about 0.6em wide per character.
  */
 function markerSize(code: string) {
-  const textSize = code.length <= 3 ? 11 : 9
-  const radius = Math.max(10, code.length * textSize * 0.3 + 4)
-  return { textSize, radius }
+  const label = code.replace(/^JAK\./, '')
+  const textSize = label.length <= 3 ? 11 : 9
+  const radius = Math.max(10, label.length * textSize * 0.3 + 4)
+  return { label, textSize, radius }
 }
 
 function busesToGeoJSON(buses: Array<Bus>): FeatureCollection {
@@ -235,7 +239,13 @@ export function RouteMap({
             paint: {
               'line-color': ['get', 'color'],
               'line-width': 3,
-              'line-opacity': 0.25,
+              'line-opacity': ROUTE_OPACITY,
+              // Lines cross-fade when the route filter changes.
+              'line-opacity-transition': {
+                duration: matchMedia('(prefers-reduced-motion: reduce)').matches
+                  ? 0
+                  : 400,
+              },
             },
           })
           m.addSource('buses', { type: 'geojson', data: busData.current })
@@ -278,7 +288,7 @@ export function RouteMap({
             // Text waits until the circle is almost big enough to hold it.
             minzoom: LABEL_ZOOM[1] - 0.5,
             layout: {
-              'text-field': ['get', 'code'],
+              'text-field': ['get', 'label'],
               'text-font': ['Noto Sans Bold'],
               'text-size': ['get', 'textSize'],
               'text-allow-overlap': true,
@@ -452,6 +462,8 @@ export function RouteMap({
     if (!ready) return
     const ctrl = new AbortController()
     setStatus('loading')
+    // Fade the old lines out while the new ones load.
+    map.current?.setPaintProperty('routes', 'line-opacity', 0)
     const qs = type ? `?type=${encodeURIComponent(type)}` : ''
     fetch(`${API}/routes${qs}`, { signal: ctrl.signal })
       .then((r) => (r.ok ? r.json() : Promise.reject(r)))
@@ -459,6 +471,7 @@ export function RouteMap({
         data.current = toGeoJSON(d.routes)
         const m = map.current
         m?.getSource<GeoJSONSource>('routes')?.setData(data.current)
+        m?.setPaintProperty('routes', 'line-opacity', ROUTE_OPACITY)
         // Keep the map within 5 km of the routes shown instead of the world.
         const b = boundsAround(d.routes, 5)
         if (m && b) {
@@ -482,7 +495,7 @@ export function RouteMap({
   return (
     <div className="relative h-full md:flex">
       {/* On phones the panel sits at the bottom of a full-screen map, in thumb reach. */}
-      <aside className="rise-in absolute inset-x-3 bottom-[calc(env(safe-area-inset-bottom)+0.75rem)] z-10 flex flex-col gap-3 bg-[var(--surface)] p-3 shadow-lg md:static md:w-80 md:shrink-0 md:gap-8 md:overflow-y-auto md:p-6 md:shadow-none">
+      <aside className="rise-in stagger absolute inset-x-3 bottom-[calc(env(safe-area-inset-bottom)+0.75rem)] z-10 flex flex-col gap-3 bg-[var(--surface)] p-3 shadow-lg md:static md:w-80 md:shrink-0 md:gap-8 md:overflow-y-auto md:p-6 md:shadow-none">
         <h1 className="m-0 text-lg font-extrabold leading-none tracking-tight md:text-4xl">
           Rute Transjakarta
         </h1>
@@ -511,7 +524,10 @@ export function RouteMap({
 
         <div aria-live="polite">
           {status === 'error' ? (
-            <div role="alert" className="flex flex-col items-start gap-3">
+            <div
+              role="alert"
+              className="fade-in flex flex-col items-start gap-3"
+            >
               <p className="m-0">
                 Gagal memuat rute. Pastikan transjakarta-api berjalan di{' '}
                 <code>{API}</code>.
@@ -536,7 +552,10 @@ export function RouteMap({
                     <span className="font-semibold">Memuat rute…</span>
                   </>
                 ) : (
-                  <span className="flex items-baseline gap-2">
+                  <span
+                    key={count}
+                    className="fade-in flex items-baseline gap-2"
+                  >
                     <span className="text-xl font-extrabold leading-none tracking-tighter tabular-nums md:text-7xl">
                       {count}
                     </span>
@@ -609,7 +628,7 @@ export function RouteMap({
           ref={container}
           // maplibre sets position: relative on its container, so size it
           // with h-full rather than absolute inset-0.
-          className="h-full w-full"
+          className={`h-full w-full transition-opacity duration-500 motion-reduce:transition-none ${ready ? 'opacity-100' : 'opacity-0'}`}
           role="region"
           aria-label="Peta rute Transjakarta"
         />

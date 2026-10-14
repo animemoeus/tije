@@ -1,8 +1,11 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { RouteMap } from '../components/RouteMap'
 
+// Route type shown when the URL has no ?type.
+const DEFAULT_TYPE = 'Angkutan Umum Integrasi'
+
 export const Route = createFileRoute('/')({
-  // No param means BRT; 'all' is the explicit "all routes" choice.
+  // No param means DEFAULT_TYPE; 'all' is the explicit "all routes" choice.
   validateSearch: (search): { type?: string } => ({
     type: typeof search.type === 'string' ? search.type : undefined,
   }),
@@ -10,7 +13,7 @@ export const Route = createFileRoute('/')({
 })
 
 function App() {
-  const { type = 'BRT' } = Route.useSearch()
+  const { type = DEFAULT_TYPE } = Route.useSearch()
   const navigate = Route.useNavigate()
   return (
     <main className="h-dvh">
@@ -18,7 +21,7 @@ function App() {
         type={type === 'all' ? '' : type}
         onTypeChange={(t) =>
           navigate({
-            search: { type: t === 'BRT' ? undefined : t || 'all' },
+            search: { type: t === DEFAULT_TYPE ? undefined : t || 'all' },
             replace: true,
           })
         }
