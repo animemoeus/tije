@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A TanStack Start (React 19, SSR via Nitro) app that draws Transjakarta bus routes on a MapLibre map. All UI text is in Indonesian (`<html lang="id">`). The data comes from the sibling project `../transjakarta-api`, a Python API that serves `GET /route-types` and `GET /routes?type=...`. Set its base URL with `VITE_API_URL` (default `http://localhost:8000`). When the API isn't running, the map shows an error card with a retry button.
+A TanStack Start (React 19, SSR via Nitro) app that draws Transjakarta bus routes on a MapLibre map. All UI text is in Indonesian (`<html lang="id">`). The data comes from the sibling project `../transjakarta-api`, a Python API that serves `GET /route-types` and `GET /routes?type=...`. Set its base URL with `VITE_API_URL` (default `http://transjakarta-api.animemoe.us`). When the API isn't running, the map shows an error card with a retry button.
 
 ## Working rules
 

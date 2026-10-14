@@ -6,7 +6,7 @@ import 'maplibre-gl/dist/maplibre-gl.css'
 // pre-bundles it; let Vite bundle the worker and hand maplibre the URL.
 import workerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url'
 
-const API = import.meta.env.VITE_API_URL ?? 'http://localhost:8000'
+const API = import.meta.env.VITE_API_URL ?? 'http://transjakarta-api.animemoe.us'
 const WS = API.replace(/^http/, 'ws')
 // The API caps the live bus radius at 20 km.
 const MAX_RADIUS_KM = 20
