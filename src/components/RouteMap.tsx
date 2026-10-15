@@ -60,6 +60,32 @@ const DIM_ROUTE_OPACITY = 0.08
 const DIM_BUS_OPACITY = 0.15
 // The route code fades in over the last half zoom level before LABEL_ZOOM[1].
 const LABEL_FADE = [LABEL_ZOOM[1] - 0.5, LABEL_ZOOM[1]]
+// How long the ring around a bus lasts after it reports a new GPS position.
+const PING_MS = 1200
+
+/**
+ * Paint for the ping rings at time `now` (performance.now()): each ring grows
+ * out of its bus and fades over PING_MS from the moment in its `t0`.
+ */
+function pingPaint(now: number) {
+  const p: ExpressionSpecification = [
+    'min',
+    1,
+    ['/', ['-', now, ['get', 't0']], PING_MS],
+  ]
+  return {
+    radius: [
+      'interpolate',
+      ['linear'],
+      ['zoom'],
+      10,
+      ['+', 2.5, ['*', p, 8]],
+      LABEL_ZOOM[1],
+      ['+', ['get', 'radius'], ['*', p, 16]],
+    ] as ExpressionSpecification,
+    opacity: ['-', 1, p] as ExpressionSpecification,
+  }
+}
 
 /** Opacity going from 0 at zoom `from` to `full` at zoom `to`. */
 function fadeIn(
@@ -228,6 +254,11 @@ export function RouteMap({
   const data = useRef(toGeoJSON([]))
   const routesRef = useRef<Array<Route>>([])
   const busData = useRef(busesToGeoJSON([]))
+  // Body number -> performance.now() of its last new GPS report.
+  const pings = useRef(new Map<string, number>())
+  const pingFrame = useRef(0)
+  // Start of the newest ring; the animation runs until it has faded.
+  const pingLast = useRef(0)
   const [ready, setReady] = useState(false)
   const [types, setTypes] = useState<Array<RouteType>>([])
   const [status, setStatus] = useState<'loading' | 'error' | 'done'>('loading')
@@ -315,6 +346,19 @@ export function RouteMap({
             source: 'focus',
             layout: { 'line-cap': 'round', 'line-join': 'round' },
             paint: { 'line-color': ['get', 'color'], 'line-width': 5 },
+          })
+          // A ring that grows and fades around a bus when it reports a new
+          // position; under the buses so it seems to come out of them.
+          m.addSource('pings', { type: 'geojson', data: busesToGeoJSON([]) })
+          m.addLayer({
+            id: 'bus-ping',
+            type: 'circle',
+            source: 'pings',
+            paint: {
+              'circle-color': 'transparent',
+              'circle-stroke-color': ['get', 'color'],
+              'circle-stroke-width': 2,
+            },
           })
           m.addSource('buses', { type: 'geojson', data: busData.current })
           // Each bus is a circle in the route colour with its route code.
@@ -440,6 +484,7 @@ export function RouteMap({
     )
     return () => {
       cancelled = true
+      cancelAnimationFrame(pingFrame.current)
       map.current?.remove()
       map.current = null
     }
@@ -470,7 +515,14 @@ export function RouteMap({
         } else if (msg.type === 'delta') {
           for (const no of msg.remove ?? []) fleet.delete(no)
           // New buses come whole; known ones only with the fields that changed.
+          // latitude/longitude are interpolated and change every frame;
+          // raw_* change only when the bus itself reports a new position.
           for (const u of msg.upsert ?? []) {
+            if (
+              fleet.has(u.bus_body_no) &&
+              ('raw_latitude' in u || 'raw_longitude' in u)
+            )
+              pings.current.set(u.bus_body_no, performance.now())
             fleet.set(u.bus_body_no, {
               ...fleet.get(u.bus_body_no),
               ...u,
@@ -502,6 +554,31 @@ export function RouteMap({
   useEffect(() => {
     busData.current = busesToGeoJSON(shownBuses)
     map.current?.getSource<GeoJSONSource>('buses')?.setData(busData.current)
+
+    // Rings follow their bus, so they're rebuilt with every feed message.
+    const m = map.current
+    if (!m || matchMedia('(prefers-reduced-motion: reduce)').matches) return
+    const now = performance.now()
+    for (const [no, t0] of pings.current) {
+      if (now - t0 >= PING_MS) pings.current.delete(no)
+      else pingLast.current = Math.max(pingLast.current, t0)
+    }
+    const rings = busesToGeoJSON(
+      shownBuses.filter((b) => pings.current.has(b.bus_body_no)),
+    )
+    for (const f of rings.features)
+      f.properties!.t0 = pings.current.get(f.properties!.no)
+    m.getSource<GeoJSONSource>('pings')?.setData(rings)
+    if (!rings.features.length || pingFrame.current) return
+    // Animate only while a ring is still growing, so an idle map stays idle.
+    const tick = (t: number) => {
+      const { radius, opacity } = pingPaint(t)
+      m.setPaintProperty('bus-ping', 'circle-radius', radius)
+      m.setPaintProperty('bus-ping', 'circle-stroke-opacity', opacity)
+      pingFrame.current =
+        t - pingLast.current < PING_MS ? requestAnimationFrame(tick) : 0
+    }
+    pingFrame.current = requestAnimationFrame(tick)
   }, [shownBuses])
 
   const focusBus = shownBuses.find((b) => b.bus_body_no === selectedBus)
@@ -545,6 +622,7 @@ export function RouteMap({
       selectedBus ? DIM_ROUTE_OPACITY : ROUTE_OPACITY,
     )
     m.setPaintProperty('buses', 'circle-opacity', dim)
+    m.setFilter('bus-ping', selectedBus ? on : null)
     m.setPaintProperty('buses', 'circle-stroke-opacity', dim)
     m.setPaintProperty('bus-label', 'text-opacity', fadeIn(LABEL_FADE, dim))
     m.setPaintProperty('bus-heading', 'icon-opacity', fadeIn(ARROW_ZOOM, dim))
