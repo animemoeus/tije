@@ -266,7 +266,9 @@ export function RouteMap({
   const [count, setCount] = useState(0)
   const [routeCodes, setRouteCodes] = useState<Set<string>>(new Set())
   const [buses, setBuses] = useState<Array<Bus>>([])
-  const [live, setLive] = useState(false)
+  const [feed, setFeed] = useState<'connecting' | 'open' | 'closed'>(
+    'connecting',
+  )
   const [feedUrl, setFeedUrl] = useState('')
   const [selectedBus, setSelectedBus] = useState<string | null>(null)
 
@@ -499,8 +501,9 @@ export function RouteMap({
       // Buses by body number for this connection only, so a reconnect
       // starts clean from the server's first snapshot.
       const fleet = new Map<string, Bus>()
+      setFeed('connecting')
       ws = new WebSocket(feedUrl)
-      ws.onopen = () => setLive(true)
+      ws.onopen = () => setFeed('open')
       ws.onmessage = (e) => {
         const msg = JSON.parse(String(e.data)) as {
           type: string
@@ -532,7 +535,7 @@ export function RouteMap({
         setBuses([...fleet.values()])
       }
       ws.onclose = () => {
-        setLive(false)
+        setFeed('closed')
         if (!closed) retry = setTimeout(connect, 3000)
       }
     }
@@ -541,7 +544,6 @@ export function RouteMap({
       closed = true
       clearTimeout(retry)
       ws?.close()
-      setLive(false)
     }
   }, [feedUrl])
 
@@ -780,14 +782,34 @@ export function RouteMap({
                   : 'Klik garis atau bus di peta untuk melihat detailnya.'}
               </p>
               <p className="mb-0 mt-1 text-sm font-semibold md:mt-5 md:text-base">
-                {live
+                {feed === 'open'
                   ? `${shownBuses.length} bus aktif di area peta`
-                  : 'Menyambungkan data bus…'}
+                  : 'Menunggu data bus…'}
               </p>
             </>
           )}
         </div>
-        <footer className="md:mt-auto">
+        <footer className="flex flex-col gap-2 md:mt-auto">
+          <p
+            aria-live="polite"
+            className="m-0 flex items-center gap-2 text-xs font-semibold text-[var(--ink-soft)]"
+          >
+            <span
+              aria-hidden="true"
+              className={`h-2 w-2 shrink-0 rounded-full ${
+                feed === 'open'
+                  ? 'bg-emerald-500'
+                  : feed === 'closed'
+                    ? 'bg-red-500'
+                    : 'animate-pulse bg-amber-500 motion-reduce:animate-none'
+              }`}
+            />
+            {feed === 'open'
+              ? 'Data bus: terhubung'
+              : feed === 'closed'
+                ? 'Data bus: terputus, menyambung ulang…'
+                : 'Data bus: menyambungkan…'}
+          </p>
           <p className="m-0 text-[11px] leading-snug text-[var(--ink-soft)] [&_a]:text-[var(--ink-soft)] [&_a]:underline-offset-2 [&_a:hover]:text-[var(--ink)]">
             <a
               target="_blank"
