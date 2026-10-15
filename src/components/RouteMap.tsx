@@ -300,7 +300,9 @@ export function RouteMap({
         m.touchZoomRotate.disableRotation()
         m.addControl(new NavigationControl({ showCompass: false }), 'top-right')
         // Draw the arrow for each route colour the first time a bus needs it.
-        m.on('styleimagemissing', ({ id }: { id: string }) => {
+        // A resolver, since a styleimagemissing listener can't supply the image
+        // for the request that fired it (maplibre then warns it's missing).
+        m.setMissingStyleImageResolver((id) => {
           if (!id.startsWith('arrow-') || m.hasImage(id)) return
           m.addImage(id, headingArrow(id.slice('arrow-'.length)), {
             pixelRatio: 2,
