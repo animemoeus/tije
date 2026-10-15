@@ -4,12 +4,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A TanStack Start (React 19, SSR via Nitro) app that draws Transjakarta bus routes on a MapLibre map. All UI text is in Indonesian (`<html lang="id">`). The data comes from the sibling project `../transjakarta-api`, a Python API that serves `GET /route-types` and `GET /routes?type=...`. Set its base URL with `VITE_API_URL` (default `http://transjakarta-api.animemoe.us`). When the API isn't running, the map shows an error card with a retry button.
+A TanStack Start (React 19, SSR via Nitro) app that draws Transjakarta bus routes on a MapLibre map. All UI text is in Indonesian (`<html lang="id">`). The data comes from the sibling project `../tije-api`, a Rust (axum) API that serves `GET /route-types`, `GET /routes?type=BRT,Mikrotrans`, the live bus feed `WS /ws?routes=...` and a per-bus event stream `GET /buses/{bus_body_no}`. Set its base URL with `VITE_API_URL` (default `https://api.tije.info`; `.env.local` points it at `http://localhost:8000`). When the API isn't running, the map shows an error card with a retry button.
 
 ## Working rules
 
 - Write plans in Indonesian. Code, identifiers, comments and docstrings stay in English.
-- Before implementing anything that touches the API (fetches, the WebSocket feed, bus or route fields, limits such as radius or snapshot rate), read the backend source in `../transjakarta-api`: `app/main.py` for endpoints, `app/config.py` for defaults and caps, `app/tracker.py` for bus fields, and `docs/backend/`. Don't infer field names, units, defaults or limits from the frontend alone. The API sends `speed` and `timestamp` as 0, for example, and cuts `radius_km` down to `TJ_MAX_RADIUS_KM`.
+- Before implementing anything that touches the API (fetches, the WebSocket feed, the bus event stream, bus or route fields, update rates), read the backend source in `../tije-api`: `README.md` for endpoints and message shapes, `src/routes.rs` for `/route-types` and `/routes`, `src/live.rs` for `/ws`, `/buses/{bus_body_no}` and the bus fields, and `src/config.rs` for defaults. Don't infer field names, units, defaults or limits from the frontend alone. For example, the API often sends `speed` and `timestamp` as 0, it no longer sends `age_seconds`, and a `/ws` without `routes` streams every bus (about 3,900).
 - Run every piece of prose (docs, docstrings, comments, commit messages, PR descriptions) through the `humanizer:humanizer` skill before saving it.
 - Give every function a docstring (JSDoc `/** ... */` in TS/TSX).
 - Use the `ponytail:ponytail` skill on every coding task.
@@ -40,7 +40,10 @@ The build output goes to `.output/`. The README's "Deploy with Nitro" section me
   - It imports `maplibre-gl` dynamically inside `useEffect` so SSR never touches it. The worker URL comes from Vite (`?worker&url` plus `setWorkerUrl`) because maplibre's own worker lookup fails after Vite pre-bundles it.
   - The API returns paths as `[lat, lon]`. `toGeoJSON` flips them to `[lon, lat]` and makes one LineString per route direction, colored from `route_color`.
   - It adds one GeoJSON source and one line layer (`routes`) once the map loads. Changing the type filter calls `setData` on that source and doesn't rebuild the map. Fetches are aborted with `AbortController`, and the `attempt` counter re-runs them on retry.
+  - The type filter is a row of checkbox chips. The chosen types live in the URL as `?type=BRT,Mikrotrans` (`src/routes/index.tsx`): no param means BRT, `all` means every type, and `RouteMap` gets them as `types: Array<string>`, where an empty array means all.
+  - Live buses come from `/ws?routes=<codes of the routes drawn>`: one snapshot, then deltas. Updates arrive about every 1.5 to 2 seconds, and the backend doesn't interpolate positions. A ring pings around a bus when its `raw_latitude`/`raw_longitude` change.
   - Popups are built with `textContent` instead of HTML strings so API values never become markup.
+- `src/components/BusInfo.tsx` follows the selected bus with an `EventSource` on `/buses/{bus_body_no}`. A `bus` event replaces the card's data; `gone` means the bus left the feed, and the card then closes the stream so it doesn't reconnect. The "updated" age counts from when the last `bus` event arrived.
 - Basemap tiles come from OpenFreeMap's `positron` style.
 
 ## Styling

@@ -1,8 +1,9 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import { API } from '#/api'
 
-// GET /buses/{bus_body_no}, only the fields shown here. The API also sends
-// speed, timestamp and estimated_time_next_stops, but they are always 0.
+// A `bus` event from GET /buses/{bus_body_no}, only the fields shown here.
+// The API also sends speed, timestamp and estimated_time_next_stops, but
+// they are often 0.
 type BusDetail = {
   bus_body_no: string
   route_code: string | null
@@ -14,11 +15,7 @@ type BusDetail = {
   prev_stop_name: string | null
   next_stop_name: string | null
   estimated_distance_next_stops: number | null
-  age_seconds: number
 }
-
-// The API only knows a bus while its area is tracked; keep the card fresh.
-const REFRESH_MS = 5000
 
 /** Metres as "845 m", or "1,2 km" from 1 km up. */
 function formatDistance(m: number) {
@@ -35,8 +32,8 @@ function formatAge(s: number) {
 }
 
 /**
- * Card with the latest details of one bus, fetched from the API and refreshed
- * while it stays open. Closes with the × button or Esc.
+ * Card with the latest details of one bus, kept current by the API's event
+ * stream while it stays open. Closes with the × button or Esc.
  */
 export function BusInfo({
   busNo,
@@ -51,38 +48,38 @@ export function BusInfo({
     'loading',
   )
   const [attempt, setAttempt] = useState(0)
+  // Date.now() of the last `bus` event, and a clock that moves the age along.
+  const [seenAt, setSeenAt] = useState(0)
+  const [now, setNow] = useState(0)
 
   useEffect(() => {
-    const ctrl = new AbortController()
-    let timer: ReturnType<typeof setTimeout> | undefined
     setBus(null)
     setStatus('loading')
-    const load = () => {
-      fetch(`${API}/buses/${encodeURIComponent(busNo)}`, {
-        signal: ctrl.signal,
-      })
-        .then((r) => {
-          if (r.status === 404) {
-            setStatus('gone')
-            return
-          }
-          if (!r.ok) throw r
-          return (r.json() as Promise<BusDetail>).then((d) => {
-            setBus(d)
-            setStatus('done')
-            timer = setTimeout(load, REFRESH_MS)
-          })
-        })
-        .catch(() => {
-          if (!ctrl.signal.aborted) setStatus('error')
-        })
+    // A `bus` event comes right away and again each time the bus changes.
+    const es = new EventSource(`${API}/buses/${encodeURIComponent(busNo)}`)
+    es.addEventListener('bus', (e) => {
+      setBus(JSON.parse(e.data) as BusDetail)
+      setSeenAt(Date.now())
+      setStatus('done')
+    })
+    // The stream ends after `gone`; close it so EventSource doesn't reconnect.
+    es.addEventListener('gone', () => {
+      setStatus('gone')
+      es.close()
+    })
+    // While CONNECTING, EventSource is retrying by itself.
+    es.onerror = () => {
+      if (es.readyState === EventSource.CLOSED) setStatus('error')
     }
-    load()
-    return () => {
-      ctrl.abort()
-      clearTimeout(timer)
-    }
+    return () => es.close()
   }, [busNo, attempt])
+
+  useEffect(() => {
+    if (status !== 'done') return
+    setNow(Date.now())
+    const timer = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(timer)
+  }, [status])
 
   const card = useRef<HTMLElement>(null)
 
@@ -200,7 +197,9 @@ export function BusInfo({
               </>
             )}
             <dt className="text-[var(--ink-soft)]">Diperbarui</dt>
-            <dd className="m-0 font-semibold">{formatAge(bus.age_seconds)}</dd>
+            <dd className="m-0 font-semibold">
+              {formatAge(Math.max(0, now - seenAt) / 1000)}
+            </dd>
           </dl>
         )}
       </div>

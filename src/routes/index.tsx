@@ -5,26 +5,31 @@ import { RouteMap } from '../components/RouteMap'
 const DEFAULT_TYPE = 'BRT'
 
 export const Route = createFileRoute('/')({
-  // No param means DEFAULT_TYPE; 'all' is the explicit "all routes" choice.
+  // ?type=BRT,Mikrotrans lists the types; no param means DEFAULT_TYPE and
+  // 'all' is the explicit "all routes" choice.
   validateSearch: (search): { type?: string } => ({
     type: typeof search.type === 'string' ? search.type : undefined,
   }),
   component: App,
 })
 
+/** The map page; keeps the chosen route types in the URL. */
 function App() {
   const { type = DEFAULT_TYPE } = Route.useSearch()
   const navigate = Route.useNavigate()
   return (
     <main className="h-dvh">
       <RouteMap
-        type={type === 'all' ? '' : type}
-        onTypeChange={(t) =>
+        types={type === 'all' ? [] : type.split(',').filter(Boolean)}
+        onTypesChange={(t) => {
+          const joined = t.join(',')
           navigate({
-            search: { type: t === DEFAULT_TYPE ? undefined : t || 'all' },
+            search: {
+              type: joined === DEFAULT_TYPE ? undefined : joined || 'all',
+            },
             replace: true,
           })
-        }
+        }}
       />
     </main>
   )

@@ -13,8 +13,6 @@ import { API } from '#/api'
 import { BusInfo } from './BusInfo'
 
 const WS = API.replace(/^http/, 'ws')
-// The API caps the live bus radius at 30 km (TJ_MAX_RADIUS_KM).
-const MAX_RADIUS_KM = 30
 
 type Route = {
   route_code: string
@@ -108,6 +106,7 @@ function markerSize(code: string) {
   return { label, textSize, radius }
 }
 
+/** One point per bus, with what the bus layers and the popup read. */
 function busesToGeoJSON(buses: Array<Bus>): FeatureCollection {
   return {
     type: 'FeatureCollection',
@@ -131,6 +130,7 @@ function busesToGeoJSON(buses: Array<Bus>): FeatureCollection {
   }
 }
 
+/** One line per route direction, with the API's [lat, lon] flipped to [lon, lat]. */
 function toGeoJSON(routes: Array<Route>): FeatureCollection {
   return {
     type: 'FeatureCollection',
@@ -188,7 +188,7 @@ function pathAhead(bus: Bus, routes: Array<Route>): Array<[number, number]> {
   ]
 }
 
-// Box around every path point, widened by `km` on each side, as [[w, s], [e, n]].
+/** Box around every path point, widened by `km` on each side, as [[w, s], [e, n]]. */
 function boundsAround(
   routes: Array<Route>,
   km: number,
@@ -231,24 +231,19 @@ function headingArrow(color: string) {
   return ctx.getImageData(0, 0, size, size)
 }
 
-// Live bus feed for the whole map area: centred on it, reaching its corners.
-// mode=delta sends one snapshot, then only the buses that changed.
-function busFeedUrl([[w, s], [e, n]]: [[number, number], [number, number]]) {
-  const lat = (s + n) / 2
-  const lon = (w + e) / 2
-  const dy = ((n - s) / 2) * KM_PER_DEG
-  const dx = ((e - w) / 2) * KM_PER_DEG * Math.cos((lat * Math.PI) / 180)
-  const radius = Math.min(MAX_RADIUS_KM, Math.ceil(Math.hypot(dx, dy)))
-  return `${WS}/ws?lat=${lat.toFixed(4)}&lon=${lon.toFixed(4)}&radius_km=${radius}&mode=delta`
-}
-
+/**
+ * Map of the routes of the chosen types with their live buses, and the side
+ * panel that picks the types. An empty `types` means every route.
+ */
 export function RouteMap({
-  type,
-  onTypeChange,
+  types,
+  onTypesChange,
 }: {
-  type: string
-  onTypeChange: (type: string) => void
+  types: Array<string>
+  onTypesChange: (types: Array<string>) => void
 }) {
+  // Effects depend on this string; the array is new on every render.
+  const typeKey = types.join(',')
   const container = useRef<HTMLDivElement>(null)
   const map = useRef<MlMap | null>(null)
   const data = useRef(toGeoJSON([]))
@@ -260,7 +255,7 @@ export function RouteMap({
   // Start of the newest ring; the animation runs until it has faded.
   const pingLast = useRef(0)
   const [ready, setReady] = useState(false)
-  const [types, setTypes] = useState<Array<RouteType>>([])
+  const [typeList, setTypeList] = useState<Array<RouteType>>([])
   const [status, setStatus] = useState<'loading' | 'error' | 'done'>('loading')
   const [attempt, setAttempt] = useState(0)
   const [count, setCount] = useState(0)
@@ -269,11 +264,17 @@ export function RouteMap({
   const [feed, setFeed] = useState<'connecting' | 'open' | 'closed'>(
     'connecting',
   )
-  const [feedUrl, setFeedUrl] = useState('')
   const [selectedBus, setSelectedBus] = useState<string | null>(null)
+  // The server sends only the buses of the routes drawn. Sorted so the same
+  // routes give the same URL and don't reconnect; no routes means no feed,
+  // since a feed without ?routes would send every bus.
+  const feedUrl = useMemo(() => {
+    const codes = [...routeCodes].sort().join(',')
+    return codes ? `${WS}/ws?routes=${encodeURIComponent(codes)}` : ''
+  }, [routeCodes])
 
   // A new route filter may hide the selected bus, so close its card.
-  useEffect(() => setSelectedBus(null), [type])
+  useEffect(() => setSelectedBus(null), [typeKey])
 
   useEffect(() => {
     let cancelled = false
@@ -512,13 +513,13 @@ export function RouteMap({
           remove?: Array<string>
         }
         if (msg.type === 'snapshot' && msg.buses) {
-          // The first message, or a resync after this client fell behind.
+          // The first message of each connection.
           fleet.clear()
           for (const b of msg.buses) fleet.set(b.bus_body_no, b)
         } else if (msg.type === 'delta') {
           for (const no of msg.remove ?? []) fleet.delete(no)
           // New buses come whole; known ones only with the fields that changed.
-          // latitude/longitude are interpolated and change every frame;
+          // latitude/longitude can move when the route snap changes;
           // raw_* change only when the bus itself reports a new position.
           for (const u of msg.upsert ?? []) {
             if (
@@ -665,7 +666,7 @@ export function RouteMap({
     fetch(`${API}/route-types`)
       .then((r) => (r.ok ? r.json() : Promise.reject(r)))
       .then((d: { types: Array<RouteType> }) =>
-        setTypes(d.types.filter((t) => t.routes > 0)),
+        setTypeList(d.types.filter((t) => t.routes > 0)),
       )
       .catch(() => {})
   }, [attempt])
@@ -676,7 +677,7 @@ export function RouteMap({
     setStatus('loading')
     // Fade the old lines out while the new ones load.
     map.current?.setPaintProperty('routes', 'line-opacity', 0)
-    const qs = type ? `?type=${encodeURIComponent(type)}` : ''
+    const qs = typeKey ? `?type=${encodeURIComponent(typeKey)}` : ''
     fetch(`${API}/routes${qs}`, { signal: ctrl.signal })
       .then((r) => (r.ok ? r.json() : Promise.reject(r)))
       .then((d: { routes: Array<Route> }) => {
@@ -690,7 +691,6 @@ export function RouteMap({
         if (m && b) {
           m.setMaxBounds(b)
           m.fitBounds(b, { padding: 0, duration: 600 })
-          setFeedUrl(busFeedUrl(b))
         }
         setCount(d.routes.length)
         setRouteCodes(new Set(d.routes.map((r) => r.route_code)))
@@ -700,10 +700,21 @@ export function RouteMap({
         if (!ctrl.signal.aborted) setStatus('error')
       })
     return () => ctrl.abort()
-  }, [ready, type, attempt])
+  }, [ready, typeKey, attempt])
 
   const focus =
     'outline-none focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]'
+  // Types whose routes are on the map; none chosen means all of them.
+  const shown = types.length ? types : typeList.map((t) => t.type)
+  const allShown = typeList.every((t) => shown.includes(t.type))
+  /** Adds or drops one type; picking every type is the same as "all". */
+  const toggleType = (t: string) => {
+    const next = shown.includes(t)
+      ? shown.filter((s) => s !== t)
+      : typeList.map((x) => x.type).filter((x) => x === t || shown.includes(x))
+    onTypesChange(next.length === typeList.length ? [] : next)
+  }
+  const chip = `flex min-h-11 cursor-pointer select-none items-center px-3 text-sm font-semibold transition-colors duration-150 bg-[var(--field)] text-[var(--ink)] hover:bg-[var(--ground)] has-[:checked]:bg-[var(--accent)] has-[:checked]:text-[var(--accent-ink)] has-[:disabled]:cursor-default has-[:focus-visible]:outline-3 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-[var(--accent)]`
 
   return (
     <div className="relative h-full md:flex">
@@ -713,27 +724,44 @@ export function RouteMap({
           Rute Transjakarta
         </h1>
 
-        <div>
-          <label
-            htmlFor="route-type"
-            className="sr-only text-sm font-medium text-[var(--ink-soft)] md:not-sr-only md:mb-2 md:block"
-          >
+        <fieldset className="m-0 border-0 p-0">
+          <legend className="sr-only text-sm font-medium text-[var(--ink-soft)] md:not-sr-only md:mb-2">
             Filter rute
-          </label>
-          <select
-            id="route-type"
-            value={type}
-            onChange={(e) => onTypeChange(e.target.value)}
-            className={`h-11 w-full cursor-pointer bg-[var(--field)] px-3 text-base font-semibold text-[var(--ink)] transition-colors duration-150 hover:bg-[var(--ground)] md:h-12 ${focus}`}
-          >
-            <option value="">Semua rute</option>
-            {types.map((t) => (
-              <option key={t.type} value={t.type}>
-                {t.type} ({t.routes})
-              </option>
-            ))}
-          </select>
-        </div>
+          </legend>
+          {/* Native checkboxes inside chips: they wrap to fit the small
+              phone panel, and keyboard and screen readers work as usual. */}
+          <div className="flex flex-wrap gap-2">
+            <label className={chip}>
+              <input
+                type="checkbox"
+                className="sr-only"
+                checked={allShown}
+                // Unticking "all" goes back to the default selection.
+                onChange={() => onTypesChange(allShown ? ['BRT'] : [])}
+              />
+              Semua rute
+            </label>
+            {typeList.map((t) => {
+              const on = shown.includes(t.type)
+              return (
+                <label key={t.type} className={chip}>
+                  <input
+                    type="checkbox"
+                    className="sr-only"
+                    checked={on}
+                    // The last ticked type stays; an empty choice would mean all.
+                    disabled={on && shown.length === 1}
+                    onChange={() => toggleType(t.type)}
+                  />
+                  {t.type}
+                  <span className="ml-1.5 font-normal tabular-nums opacity-75">
+                    {t.routes}
+                  </span>
+                </label>
+              )
+            })}
+          </div>
+        </fieldset>
 
         <div aria-live="polite">
           {status === 'error' ? (
@@ -742,7 +770,7 @@ export function RouteMap({
               className="fade-in flex flex-col items-start gap-3"
             >
               <p className="m-0">
-                Gagal memuat rute. Pastikan transjakarta-api berjalan di{' '}
+                Gagal memuat rute. Pastikan tije-api berjalan di{' '}
                 <code>{API}</code>.
               </p>
               <button
@@ -783,7 +811,7 @@ export function RouteMap({
               </p>
               <p className="mb-0 mt-1 text-sm font-semibold md:mt-5 md:text-base">
                 {feed === 'open'
-                  ? `${shownBuses.length} bus aktif di area peta`
+                  ? `${shownBuses.length} bus aktif di rute ini`
                   : 'Menunggu data bus…'}
               </p>
             </>
