@@ -58,11 +58,15 @@ const DIM_ROUTE_OPACITY = 0.08
 const DIM_BUS_OPACITY = 0.15
 // The route code fades in over the last half zoom level before LABEL_ZOOM[1].
 const LABEL_FADE = [LABEL_ZOOM[1] - 0.5, LABEL_ZOOM[1]]
-// How long the ring around a bus lasts after it reports a new GPS position.
+// How long the glow around a bus lasts after it reports a new GPS position.
 const PING_MS = 1200
+// Opacity of the glow when it starts; it fades to 0 from there.
+const PING_OPACITY = 1
+// Outer share of the glow's radius that fades out; inside it the colour is solid.
+const PING_BLUR = 0.6
 
 /**
- * Paint for the ping rings at time `now` (performance.now()): each ring grows
+ * Paint for the ping glows at time `now` (performance.now()): each glow grows
  * out of its bus and fades over PING_MS from the moment in its `t0`.
  */
 function pingPaint(now: number) {
@@ -81,7 +85,7 @@ function pingPaint(now: number) {
       LABEL_ZOOM[1],
       ['+', ['get', 'radius'], ['*', p, 16]],
     ] as ExpressionSpecification,
-    opacity: ['-', 1, p] as ExpressionSpecification,
+    opacity: ['*', PING_OPACITY, ['-', 1, p]] as ExpressionSpecification,
   }
 }
 
@@ -350,17 +354,18 @@ export function RouteMap({
             layout: { 'line-cap': 'round', 'line-join': 'round' },
             paint: { 'line-color': ['get', 'color'], 'line-width': 5 },
           })
-          // A ring that grows and fades around a bus when it reports a new
-          // position; under the buses so it seems to come out of them.
+          // A glow in the route colour that grows and fades around a bus when
+          // it reports a new position: solid near the bus, fading to clear at
+          // the edge (PING_BLUR), so it has no hard rim. It sits under the
+          // buses so it seems to come out of them.
           m.addSource('pings', { type: 'geojson', data: busesToGeoJSON([]) })
           m.addLayer({
             id: 'bus-ping',
             type: 'circle',
             source: 'pings',
             paint: {
-              'circle-color': 'transparent',
-              'circle-stroke-color': ['get', 'color'],
-              'circle-stroke-width': 2,
+              'circle-color': ['get', 'color'],
+              'circle-blur': PING_BLUR,
             },
           })
           m.addSource('buses', { type: 'geojson', data: busData.current })
@@ -577,7 +582,7 @@ export function RouteMap({
     const tick = (t: number) => {
       const { radius, opacity } = pingPaint(t)
       m.setPaintProperty('bus-ping', 'circle-radius', radius)
-      m.setPaintProperty('bus-ping', 'circle-stroke-opacity', opacity)
+      m.setPaintProperty('bus-ping', 'circle-opacity', opacity)
       pingFrame.current =
         t - pingLast.current < PING_MS ? requestAnimationFrame(tick) : 0
     }
