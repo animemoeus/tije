@@ -97,6 +97,36 @@ a:focus-visible {
   }
 }
 
+/* The user's location, Google Maps style: a blue dot in a white ring with a
+   soft pulse. It turns grey while the position is out of date. */
+.user-pin {
+  width: 16px;
+  height: 16px;
+  border: 3px solid #ffffff;
+  border-radius: 50%;
+  background: #1a73e8;
+  box-shadow: 0 1px 4px rgb(0 0 0 / 0.35);
+  animation: user-pin 2s ease-out infinite;
+}
+
+.user-pin-stale {
+  background: #9aa0a6;
+  animation: none;
+}
+
+@keyframes user-pin {
+  from {
+    box-shadow:
+      0 1px 4px rgb(0 0 0 / 0.35),
+      0 0 0 0 rgb(26 115 232 / 0.4);
+  }
+  to {
+    box-shadow:
+      0 1px 4px rgb(0 0 0 / 0.35),
+      0 0 0 14px rgb(26 115 232 / 0);
+  }
+}
+
 @keyframes sheet-up {
   from {
     transform: translateY(100%);
@@ -128,6 +158,7 @@ a:focus-visible {
   .stagger > *,
   .fade-in,
   .sheet-up,
+  .user-pin,
   .maplibregl-popup-content {
     animation: none;
   }

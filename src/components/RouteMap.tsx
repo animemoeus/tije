@@ -3,6 +3,7 @@ import type {
   ExpressionSpecification,
   GeoJSONSource,
   Map as MlMap,
+  Marker,
 } from 'maplibre-gl'
 import type { FeatureCollection } from 'geojson'
 import 'maplibre-gl/dist/maplibre-gl.css'
@@ -56,6 +57,10 @@ const ROUTE_OPACITY = 0.25
 // these.
 const DIM_ROUTE_OPACITY = 0.08
 const DIM_BUS_OPACITY = 0.15
+// The user's dot and accuracy circle, Google Maps blue.
+const USER_COLOR = '#1a73e8'
+// Metres per pixel at zoom 0 on the equator, for maplibre's 512 px tiles.
+const M_PER_PX_Z0 = 78271.517
 // The route code fades in over the last half zoom level before LABEL_ZOOM[1].
 const LABEL_FADE = [LABEL_ZOOM[1] - 0.5, LABEL_ZOOM[1]]
 // How long the glow around a bus lasts after it reports a new GPS position.
@@ -273,6 +278,22 @@ export function RouteMap({
   const [tab, setTab] = useState<'map' | 'filter' | 'info'>('map')
   // The sheet's last tab, still shown while the sheet slides away to the map.
   const [sheet, setSheet] = useState<'filter' | 'info'>('filter')
+  // The user's own location: its pin, whether a fix is on the way, and a
+  // short message when it can't be shown.
+  // Like Google Maps: 'searching' until the first fix, then 'follow' keeps
+  // the map on the user until they drag it ('free'); the button recentres.
+  const userPin = useRef<Marker | null>(null)
+  const watchId = useRef<number | null>(null)
+  const lastFix = useRef<[number, number] | null>(null)
+  const locMode = useRef<'off' | 'searching' | 'follow' | 'free'>('off')
+  const [loc, setLoc] = useState(locMode.current)
+  const [notice, setNotice] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!notice) return
+    const timer = setTimeout(() => setNotice(null), 5000)
+    return () => clearTimeout(timer)
+  }, [notice])
   // The server sends only the buses of the routes drawn. Sorted so the same
   // routes give the same URL and don't reconnect; no routes means no feed,
   // since a feed without ?routes would send every bus.
@@ -357,6 +378,21 @@ export function RouteMap({
           source: 'focus',
           layout: { 'line-cap': 'round', 'line-join': 'round' },
           paint: { 'line-color': ['get', 'color'], 'line-width': 5 },
+        })
+        // How far off the user's location may be, drawn under the buses.
+        m.addSource('user-accuracy', { type: 'geojson', data: toGeoJSON([]) })
+        m.addLayer({
+          id: 'user-accuracy',
+          type: 'circle',
+          source: 'user-accuracy',
+          paint: {
+            'circle-color': USER_COLOR,
+            'circle-opacity': 0.12,
+            'circle-stroke-color': USER_COLOR,
+            'circle-stroke-opacity': 0.3,
+            'circle-stroke-width': 1,
+            'circle-pitch-alignment': 'map',
+          },
         })
         // A glow in the route colour that grows and fades around a bus when
         // it reports a new position: solid near the bus, fading to clear at
@@ -649,6 +685,7 @@ export function RouteMap({
 
     const { bus, path } = focusRef.current
     if (!bus) return
+    if (locMode.current === 'follow') setLocMode('free')
     // Keep clear of the BusInfo card: top left on desktop, bottom on phones.
     const desktop = matchMedia('(min-width: 768px)').matches
     const padding = desktop
@@ -726,6 +763,149 @@ export function RouteMap({
   }
   /** Hides a panel section on phones unless tab `t` is open. */
   const onTab = (t: typeof sheet) => (sheet === t ? '' : 'max-md:hidden')
+
+  useEffect(() => {
+    const m = map.current
+    if (!m || !ready) return
+    // Dragging the map lets go of the user, as in Google Maps; zooming doesn't.
+    const letGo = () => {
+      if (locMode.current === 'follow') {
+        locMode.current = 'free'
+        setLoc('free')
+      }
+    }
+    m.on('dragstart', letGo)
+    return () => {
+      m.off('dragstart', letGo)
+    }
+  }, [ready])
+
+  useEffect(
+    () => () => {
+      if (watchId.current !== null)
+        navigator.geolocation.clearWatch(watchId.current)
+    },
+    [],
+  )
+
+  /** Sets the locate mode in the ref the callbacks read and in state. */
+  const setLocMode = (mode: typeof locMode.current) => {
+    locMode.current = mode
+    setLoc(mode)
+  }
+
+  /** Stops watching the user's position and takes the dot off the map. */
+  const stopLocating = () => {
+    if (watchId.current !== null)
+      navigator.geolocation.clearWatch(watchId.current)
+    watchId.current = null
+    lastFix.current = null
+    userPin.current?.remove()
+    userPin.current = null
+    map.current
+      ?.getSource<GeoJSONSource>('user-accuracy')
+      ?.setData(toGeoJSON([]))
+    setLocMode('off')
+  }
+
+  /**
+   * Moves the dot and accuracy circle to a new fix. The first fix flies the
+   * map there; later ones keep it centred while following. A fix outside the
+   * map's bounds (the routes shown plus 5 km) stops locating with a message.
+   */
+  const onFix = async ({ coords }: GeolocationPosition) => {
+    const m = map.current
+    if (!m || watchId.current === null) return
+    const at: [number, number] = [coords.longitude, coords.latitude]
+    if (m.getMaxBounds()?.contains(at) === false) {
+      stopLocating()
+      setNotice('Lokasi Anda di luar jangkauan rute yang ditampilkan.')
+      return
+    }
+    lastFix.current = at
+    if (!userPin.current) {
+      const { Marker } = await import('maplibre-gl')
+      const el = document.createElement('div')
+      el.className = 'user-pin'
+      el.setAttribute('role', 'img')
+      el.setAttribute('aria-label', 'Lokasi Anda')
+      userPin.current = new Marker({ element: el })
+    }
+    userPin.current.setLngLat(at).addTo(m)
+    userPin.current.getElement().classList.remove('user-pin-stale')
+    m.getSource<GeoJSONSource>('user-accuracy')?.setData({
+      type: 'Feature',
+      properties: {},
+      geometry: { type: 'Point', coordinates: at },
+    })
+    // Metres to pixels: one pixel covers M_PER_PX_Z0 * cos(lat) metres at
+    // zoom 0 and half that with each zoom level.
+    const r0 =
+      coords.accuracy /
+      (M_PER_PX_Z0 * Math.cos((coords.latitude * Math.PI) / 180))
+    m.setPaintProperty('user-accuracy', 'circle-radius', [
+      'interpolate',
+      ['exponential', 2],
+      ['zoom'],
+      0,
+      r0,
+      22,
+      r0 * 2 ** 22,
+    ])
+    const duration = matchMedia('(prefers-reduced-motion: reduce)').matches
+      ? 0
+      : undefined
+    if (locMode.current === 'searching') {
+      setLocMode('follow')
+      // Close enough to see the buses with their heading arrows.
+      m.flyTo({ center: at, zoom: Math.max(m.getZoom(), 16), duration })
+    } else if (locMode.current === 'follow') {
+      m.easeTo({ center: at, duration: duration ?? 500 })
+    }
+  }
+
+  /** A refused lookup stops locating; a lost signal greys the dot out. */
+  const onFixError = (err: GeolocationPositionError) => {
+    if (err.code === err.PERMISSION_DENIED) {
+      stopLocating()
+      setNotice(
+        'Akses lokasi ditolak. Izinkan lokasi untuk situs ini di pengaturan browser.',
+      )
+    } else if (locMode.current === 'searching') {
+      stopLocating()
+      setNotice('Lokasi Anda tidak bisa ditemukan. Coba lagi sebentar lagi.')
+    } else {
+      userPin.current?.getElement().classList.add('user-pin-stale')
+    }
+  }
+
+  /**
+   * The locate button. The first tap asks the browser for the location and
+   * starts following it; after the user drags the map away, a tap brings
+   * the map back to them.
+   */
+  const locate = () => {
+    if (locMode.current === 'off') {
+      if (!('geolocation' in navigator)) {
+        setNotice('Perangkat ini tidak mendukung lokasi.')
+        return
+      }
+      setNotice(null)
+      setLocMode('searching')
+      watchId.current = navigator.geolocation.watchPosition(
+        (pos) => void onFix(pos),
+        onFixError,
+        { enableHighAccuracy: true, timeout: 15000, maximumAge: 10000 },
+      )
+    } else if (lastFix.current) {
+      setLocMode('follow')
+      map.current?.easeTo({
+        center: lastFix.current,
+        zoom: Math.max(map.current.getZoom(), 16),
+      })
+    }
+  }
+
   const chip = `flex min-h-11 cursor-pointer select-none items-center px-3 text-sm font-semibold transition-colors duration-150 bg-[var(--field)] text-[var(--ink)] hover:bg-[var(--ground)] has-[:checked]:bg-[var(--accent)] has-[:checked]:text-[var(--accent-ink)] has-[:disabled]:cursor-default has-[:focus-visible]:outline-3 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-[var(--accent)]`
 
   return (
@@ -948,6 +1128,49 @@ export function RouteMap({
               ? 'Menyambung ulang…'
               : 'Menyambungkan…'}
         </span>
+      </p>
+
+      {/* Locate button, bottom right; on phones it sits above the tab bar and
+          slips under an open sheet or bus card. */}
+      <button
+        type="button"
+        onClick={locate}
+        aria-label={
+          loc === 'free' ? 'Kembali ke lokasi saya' : 'Tampilkan lokasi saya'
+        }
+        aria-pressed={loc === 'follow'}
+        className={`absolute bottom-[calc(3.5rem+env(safe-area-inset-bottom)+1rem)] right-3 z-[5] flex h-12 w-12 cursor-pointer items-center justify-center rounded-full bg-[var(--surface)] shadow-md transition-transform duration-150 active:scale-95 md:bottom-4 md:right-4 ${loc === 'off' ? 'text-[var(--ink-soft)]' : 'text-[var(--accent)]'} ${focus}`}
+      >
+        <svg
+          aria-hidden="true"
+          viewBox="0 0 24 24"
+          className={`h-6 w-6 ${loc === 'searching' ? 'animate-pulse motion-reduce:animate-none' : ''}`}
+          fill="none"
+          stroke="currentColor"
+          strokeWidth={2}
+          strokeLinecap="round"
+        >
+          <circle cx="12" cy="12" r="7" />
+          {/* Filled while the map follows the user, hollow otherwise. */}
+          <circle
+            cx="12"
+            cy="12"
+            r="3"
+            fill={loc === 'follow' ? 'currentColor' : 'none'}
+          />
+          <path d="M12 2v3m0 14v3M2 12h3m14 0h3" />
+        </svg>
+      </button>
+
+      <p
+        role="status"
+        className="pointer-events-none absolute inset-x-3 bottom-[calc(3.5rem+env(safe-area-inset-bottom)+4.5rem)] z-20 m-0 flex justify-end md:bottom-[4.5rem] md:left-auto md:right-4 md:max-w-sm"
+      >
+        {notice && (
+          <span className="fade-in rounded-2xl bg-[var(--ink)] px-4 py-3 text-sm font-semibold text-[var(--surface)] shadow-lg">
+            {notice}
+          </span>
+        )}
       </p>
 
       <nav
