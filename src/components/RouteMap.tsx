@@ -14,6 +14,9 @@ import { BusInfo } from './BusInfo'
 
 const WS = API.replace(/^http/, 'ws')
 
+// Route types shown until the user picks others, in the API's /route-types order.
+export const DEFAULT_TYPES = ['BRT', 'Angkutan Umum Integrasi']
+
 type Route = {
   route_code: string
   route_name: string
@@ -284,218 +287,215 @@ export function RouteMap({
 
   useEffect(() => {
     let cancelled = false
-    void import('maplibre-gl').then(
-      ({ Map, NavigationControl, Popup, setWorkerUrl }) => {
-        if (cancelled || !container.current) return
-        setWorkerUrl(workerUrl)
-        const m = new Map({
-          container: container.current,
-          style: 'https://tiles.openfreemap.org/styles/positron',
-          center: [106.8456, -6.2088],
-          zoom: 11,
-          attributionControl: false,
-          // Keep north up: there's no compass to reset rotation, and the
-          // heading arrows are placed for an unrotated map.
-          dragRotate: false,
-          pitchWithRotate: false,
+    void import('maplibre-gl').then(({ Map, Popup, setWorkerUrl }) => {
+      if (cancelled || !container.current) return
+      setWorkerUrl(workerUrl)
+      const m = new Map({
+        container: container.current,
+        style: 'https://tiles.openfreemap.org/styles/positron',
+        center: [106.8456, -6.2088],
+        zoom: 11,
+        attributionControl: false,
+        // Keep north up: there's no compass to reset rotation, and the
+        // heading arrows are placed for an unrotated map.
+        dragRotate: false,
+        pitchWithRotate: false,
+      })
+      m.touchZoomRotate.disableRotation()
+      // Draw the arrow for each route colour the first time a bus needs it.
+      // A resolver, since a styleimagemissing listener can't supply the image
+      // for the request that fired it (maplibre then warns it's missing).
+      m.setMissingStyleImageResolver((id) => {
+        if (!id.startsWith('arrow-') || m.hasImage(id)) return
+        m.addImage(id, headingArrow(id.slice('arrow-'.length)), {
+          pixelRatio: 2,
         })
-        m.touchZoomRotate.disableRotation()
-        m.addControl(new NavigationControl({ showCompass: false }), 'top-right')
-        // Draw the arrow for each route colour the first time a bus needs it.
-        // A resolver, since a styleimagemissing listener can't supply the image
-        // for the request that fired it (maplibre then warns it's missing).
-        m.setMissingStyleImageResolver((id) => {
-          if (!id.startsWith('arrow-') || m.hasImage(id)) return
-          m.addImage(id, headingArrow(id.slice('arrow-'.length)), {
-            pixelRatio: 2,
-          })
+      })
+      m.on('load', () => {
+        // Positron is grey; give water and greenery their natural colours.
+        m.setPaintProperty('water', 'fill-color', '#c4dbe7')
+        m.setPaintProperty('waterway', 'line-color', '#c4dbe7')
+        m.setPaintProperty('park', 'fill-color', '#dce8d5')
+        m.setPaintProperty('landcover_wood', 'fill-color', '#cde0c4')
+        m.addLayer(
+          {
+            id: 'landcover_grass',
+            type: 'fill',
+            source: 'openmaptiles',
+            'source-layer': 'landcover',
+            filter: [
+              'in',
+              ['get', 'class'],
+              ['literal', ['grass', 'farmland']],
+            ],
+            paint: { 'fill-color': '#e2ecd8' },
+          },
+          'water',
+        )
+        m.addSource('routes', { type: 'geojson', data: data.current })
+        m.addLayer({
+          id: 'routes',
+          type: 'line',
+          source: 'routes',
+          layout: { 'line-cap': 'round', 'line-join': 'round' },
+          paint: {
+            'line-color': ['get', 'color'],
+            'line-width': 3,
+            'line-opacity': ROUTE_OPACITY,
+            // Lines cross-fade when the route filter changes.
+            'line-opacity-transition': {
+              duration: matchMedia('(prefers-reduced-motion: reduce)').matches
+                ? 0
+                : 400,
+            },
+          },
         })
-        m.on('load', () => {
-          // Positron is grey; give water and greenery their natural colours.
-          m.setPaintProperty('water', 'fill-color', '#c4dbe7')
-          m.setPaintProperty('waterway', 'line-color', '#c4dbe7')
-          m.setPaintProperty('park', 'fill-color', '#dce8d5')
-          m.setPaintProperty('landcover_wood', 'fill-color', '#cde0c4')
-          m.addLayer(
-            {
-              id: 'landcover_grass',
-              type: 'fill',
-              source: 'openmaptiles',
-              'source-layer': 'landcover',
-              filter: [
-                'in',
-                ['get', 'class'],
-                ['literal', ['grass', 'farmland']],
-              ],
-              paint: { 'fill-color': '#e2ecd8' },
-            },
-            'water',
-          )
-          m.addSource('routes', { type: 'geojson', data: data.current })
-          m.addLayer({
-            id: 'routes',
-            type: 'line',
-            source: 'routes',
-            layout: { 'line-cap': 'round', 'line-join': 'round' },
-            paint: {
-              'line-color': ['get', 'color'],
-              'line-width': 3,
-              'line-opacity': ROUTE_OPACITY,
-              // Lines cross-fade when the route filter changes.
-              'line-opacity-transition': {
-                duration: matchMedia('(prefers-reduced-motion: reduce)').matches
-                  ? 0
-                  : 400,
-              },
-            },
-          })
-          // The selected bus's route from where it is to where it's going.
-          m.addSource('focus', { type: 'geojson', data: toGeoJSON([]) })
-          m.addLayer({
-            id: 'route-ahead',
-            type: 'line',
-            source: 'focus',
-            layout: { 'line-cap': 'round', 'line-join': 'round' },
-            paint: { 'line-color': ['get', 'color'], 'line-width': 5 },
-          })
-          // A glow in the route colour that grows and fades around a bus when
-          // it reports a new position: solid near the bus, fading to clear at
-          // the edge (PING_BLUR), so it has no hard rim. It sits under the
-          // buses so it seems to come out of them.
-          m.addSource('pings', { type: 'geojson', data: busesToGeoJSON([]) })
-          m.addLayer({
-            id: 'bus-ping',
-            type: 'circle',
-            source: 'pings',
-            paint: {
-              'circle-color': ['get', 'color'],
-              'circle-blur': PING_BLUR,
-            },
-          })
-          m.addSource('buses', { type: 'geojson', data: busData.current })
-          // Each bus is a circle in the route colour with its route code.
-          // Zoomed out, buses are too close for that (see LABEL_ZOOM), so
-          // they shrink to small dots and the code is hidden.
-          m.addLayer({
-            id: 'buses',
-            type: 'circle',
-            source: 'buses',
-            paint: {
-              'circle-radius': [
-                'interpolate',
-                ['linear'],
-                ['zoom'],
-                10,
-                2.5,
-                LABEL_ZOOM[0],
-                5,
-                LABEL_ZOOM[1],
-                ['get', 'radius'],
-              ],
-              'circle-color': ['get', 'color'],
-              'circle-stroke-width': [
-                'interpolate',
-                ['linear'],
-                ['zoom'],
-                10,
-                0.75,
-                LABEL_ZOOM[1],
-                2,
-              ],
-              'circle-stroke-color': '#ffffff',
-            },
-          })
-          m.addLayer({
-            id: 'bus-label',
-            type: 'symbol',
-            source: 'buses',
-            // Text waits until the circle is almost big enough to hold it.
-            minzoom: LABEL_ZOOM[1] - 0.5,
-            layout: {
-              'text-field': ['get', 'label'],
-              'text-font': ['Noto Sans Bold'],
-              'text-size': ['get', 'textSize'],
-              'text-allow-overlap': true,
-              'text-ignore-placement': true,
-            },
-            paint: {
-              'text-color': ['get', 'textColor'],
-              'text-opacity': fadeIn(LABEL_FADE),
-            },
-          })
-          m.addLayer({
-            id: 'bus-heading',
-            type: 'symbol',
-            source: 'buses',
-            minzoom: ARROW_ZOOM[0],
-            layout: {
-              'icon-image': ['concat', 'arrow-', ['get', 'color']],
-              'icon-rotate': ['get', 'bearing'],
-              'icon-rotation-alignment': 'map',
-              // Just outside the circle, straight "up" from the bus; the map
-              // turns it with icon-rotate. Built from a number because
-              // maplibre turns array properties into JSON strings.
-              'icon-offset': [
-                'interpolate',
-                ['linear'],
-                ['+', ['get', 'radius'], 5],
-                0,
-                ['literal', [0, 0]],
-                100,
-                ['literal', [0, -100]],
-              ],
-              'icon-allow-overlap': true,
-              'icon-ignore-placement': true,
-            },
-            paint: {
-              'icon-opacity': fadeIn(ARROW_ZOOM),
-            },
-          })
-          setReady(true)
+        // The selected bus's route from where it is to where it's going.
+        m.addSource('focus', { type: 'geojson', data: toGeoJSON([]) })
+        m.addLayer({
+          id: 'route-ahead',
+          type: 'line',
+          source: 'focus',
+          layout: { 'line-cap': 'round', 'line-join': 'round' },
+          paint: { 'line-color': ['get', 'color'], 'line-width': 5 },
         })
-        const popup = (
-          at: Parameters<InstanceType<typeof Popup>['setLngLat']>[0],
-          title: string,
-          body: string,
-        ) => {
-          const el = document.createElement('div')
-          el.innerHTML = '<strong></strong><span></span>'
-          el.querySelector('strong')!.textContent = title
-          el.querySelector('span')!.textContent = body
-          new Popup({ closeButton: false, maxWidth: '260px' })
-            .setLngLat(at)
-            .setDOMContent(el)
-            .addTo(m)
-        }
-        m.on('click', 'routes', (e) => {
-          // A click on a bus over a route belongs to the bus card only.
-          if (m.queryRenderedFeatures(e.point, { layers: ['buses'] }).length)
-            return
-          const p = e.features?.[0]?.properties
-          if (p) popup(e.lngLat, String(p.code), String(p.name))
+        // A glow in the route colour that grows and fades around a bus when
+        // it reports a new position: solid near the bus, fading to clear at
+        // the edge (PING_BLUR), so it has no hard rim. It sits under the
+        // buses so it seems to come out of them.
+        m.addSource('pings', { type: 'geojson', data: busesToGeoJSON([]) })
+        m.addLayer({
+          id: 'bus-ping',
+          type: 'circle',
+          source: 'pings',
+          paint: {
+            'circle-color': ['get', 'color'],
+            'circle-blur': PING_BLUR,
+          },
         })
-        m.on('click', 'buses', (e) => {
-          const p = e.features?.[0]?.properties
-          if (p) setSelectedBus(String(p.no))
+        m.addSource('buses', { type: 'geojson', data: busData.current })
+        // Each bus is a circle in the route colour with its route code.
+        // Zoomed out, buses are too close for that (see LABEL_ZOOM), so
+        // they shrink to small dots and the code is hidden.
+        m.addLayer({
+          id: 'buses',
+          type: 'circle',
+          source: 'buses',
+          paint: {
+            'circle-radius': [
+              'interpolate',
+              ['linear'],
+              ['zoom'],
+              10,
+              2.5,
+              LABEL_ZOOM[0],
+              5,
+              LABEL_ZOOM[1],
+              ['get', 'radius'],
+            ],
+            'circle-color': ['get', 'color'],
+            'circle-stroke-width': [
+              'interpolate',
+              ['linear'],
+              ['zoom'],
+              10,
+              0.75,
+              LABEL_ZOOM[1],
+              2,
+            ],
+            'circle-stroke-color': '#ffffff',
+          },
         })
-        // A click on the map closes an open sheet, and away from any bus
-        // also the bus card.
-        m.on('click', (e) => {
-          setTab('map')
-          if (!m.queryRenderedFeatures(e.point, { layers: ['buses'] }).length)
-            setSelectedBus(null)
+        m.addLayer({
+          id: 'bus-label',
+          type: 'symbol',
+          source: 'buses',
+          // Text waits until the circle is almost big enough to hold it.
+          minzoom: LABEL_ZOOM[1] - 0.5,
+          layout: {
+            'text-field': ['get', 'label'],
+            'text-font': ['Noto Sans Bold'],
+            'text-size': ['get', 'textSize'],
+            'text-allow-overlap': true,
+            'text-ignore-placement': true,
+          },
+          paint: {
+            'text-color': ['get', 'textColor'],
+            'text-opacity': fadeIn(LABEL_FADE),
+          },
         })
-        for (const layer of ['routes', 'buses']) {
-          m.on(
-            'mouseenter',
-            layer,
-            () => (m.getCanvas().style.cursor = 'pointer'),
-          )
-          m.on('mouseleave', layer, () => (m.getCanvas().style.cursor = ''))
-        }
-        map.current = m
-      },
-    )
+        m.addLayer({
+          id: 'bus-heading',
+          type: 'symbol',
+          source: 'buses',
+          minzoom: ARROW_ZOOM[0],
+          layout: {
+            'icon-image': ['concat', 'arrow-', ['get', 'color']],
+            'icon-rotate': ['get', 'bearing'],
+            'icon-rotation-alignment': 'map',
+            // Just outside the circle, straight "up" from the bus; the map
+            // turns it with icon-rotate. Built from a number because
+            // maplibre turns array properties into JSON strings.
+            'icon-offset': [
+              'interpolate',
+              ['linear'],
+              ['+', ['get', 'radius'], 5],
+              0,
+              ['literal', [0, 0]],
+              100,
+              ['literal', [0, -100]],
+            ],
+            'icon-allow-overlap': true,
+            'icon-ignore-placement': true,
+          },
+          paint: {
+            'icon-opacity': fadeIn(ARROW_ZOOM),
+          },
+        })
+        setReady(true)
+      })
+      const popup = (
+        at: Parameters<InstanceType<typeof Popup>['setLngLat']>[0],
+        title: string,
+        body: string,
+      ) => {
+        const el = document.createElement('div')
+        el.innerHTML = '<strong></strong><span></span>'
+        el.querySelector('strong')!.textContent = title
+        el.querySelector('span')!.textContent = body
+        new Popup({ closeButton: false, maxWidth: '260px' })
+          .setLngLat(at)
+          .setDOMContent(el)
+          .addTo(m)
+      }
+      m.on('click', 'routes', (e) => {
+        // A click on a bus over a route belongs to the bus card only.
+        if (m.queryRenderedFeatures(e.point, { layers: ['buses'] }).length)
+          return
+        const p = e.features?.[0]?.properties
+        if (p) popup(e.lngLat, String(p.code), String(p.name))
+      })
+      m.on('click', 'buses', (e) => {
+        const p = e.features?.[0]?.properties
+        if (p) setSelectedBus(String(p.no))
+      })
+      // A click on the map closes an open sheet, and away from any bus
+      // also the bus card.
+      m.on('click', (e) => {
+        setTab('map')
+        if (!m.queryRenderedFeatures(e.point, { layers: ['buses'] }).length)
+          setSelectedBus(null)
+      })
+      for (const layer of ['routes', 'buses']) {
+        m.on(
+          'mouseenter',
+          layer,
+          () => (m.getCanvas().style.cursor = 'pointer'),
+        )
+        m.on('mouseleave', layer, () => (m.getCanvas().style.cursor = ''))
+      }
+      map.current = m
+    })
     return () => {
       cancelled = true
       cancelAnimationFrame(pingFrame.current)
@@ -757,7 +757,7 @@ export function RouteMap({
                 className="sr-only"
                 checked={allShown}
                 // Unticking "all" goes back to the default selection.
-                onChange={() => onTypesChange(allShown ? ['BRT'] : [])}
+                onChange={() => onTypesChange(allShown ? DEFAULT_TYPES : [])}
               />
               Semua rute
             </label>
@@ -838,26 +838,6 @@ export function RouteMap({
           )}
         </div>
         <footer className={`flex flex-col gap-2 md:mt-auto ${onTab('info')}`}>
-          <p
-            aria-live="polite"
-            className="m-0 flex items-center gap-2 text-xs font-semibold text-[var(--ink-soft)]"
-          >
-            <span
-              aria-hidden="true"
-              className={`h-2 w-2 shrink-0 rounded-full ${
-                feed === 'open'
-                  ? 'bg-emerald-500'
-                  : feed === 'closed'
-                    ? 'bg-red-500'
-                    : 'animate-pulse bg-amber-500 motion-reduce:animate-none'
-              }`}
-            />
-            {feed === 'open'
-              ? 'Data bus: terhubung'
-              : feed === 'closed'
-                ? 'Data bus: terputus, menyambung ulang…'
-                : 'Data bus: menyambungkan…'}
-          </p>
           <p className="m-0 text-[11px] leading-snug text-[var(--ink-soft)] [&_a]:text-[var(--ink-soft)] [&_a]:underline-offset-2 [&_a:hover]:text-[var(--ink)]">
             <a
               target="_blank"
@@ -934,23 +914,37 @@ export function RouteMap({
             <span className="pr-2.5">Memuat rute…</span>
           </>
         ) : (
-          <>
-            <span
-              className={`h-2 w-2 shrink-0 rounded-full ${
-                feed === 'open'
-                  ? 'bg-emerald-500'
-                  : feed === 'closed'
-                    ? 'bg-red-500'
-                    : 'animate-pulse bg-amber-500 motion-reduce:animate-none'
-              }`}
-            />
-            <span className="pr-2.5 tabular-nums">
-              {feed === 'open' ? `${shownBuses.length} bus` : 'Menyambungkan…'}
-              <span className="text-[var(--ink-soft)]"> · {count} rute</span>
-            </span>
-          </>
+          <span className="pr-2.5 tabular-nums">
+            {feed === 'open' && `${shownBuses.length} bus · `}
+            <span className="text-[var(--ink-soft)]">{count} rute</span>
+          </span>
         )}
       </div>
+
+      {/* Live feed status, top right on every screen size. */}
+      <p
+        aria-live="polite"
+        className="fade-in absolute right-3 top-[calc(env(safe-area-inset-top)+0.75rem)] z-10 m-0 flex min-h-10 items-center gap-2 rounded-full bg-[var(--surface)] px-4 text-sm font-semibold shadow-md"
+      >
+        <span
+          aria-hidden="true"
+          className={`h-2 w-2 shrink-0 rounded-full ${
+            feed === 'open'
+              ? 'bg-emerald-500'
+              : feed === 'closed'
+                ? 'bg-red-500'
+                : 'animate-pulse bg-amber-500 motion-reduce:animate-none'
+          }`}
+        />
+        <span className="sr-only">Data bus: </span>
+        <span>
+          {feed === 'open'
+            ? 'Terhubung'
+            : feed === 'closed'
+              ? 'Menyambung ulang…'
+              : 'Menyambungkan…'}
+        </span>
+      </p>
 
       <nav
         role="tablist"

@@ -1,8 +1,8 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { RouteMap } from '../components/RouteMap'
+import { DEFAULT_TYPES, RouteMap } from '../components/RouteMap'
 
-// Route type shown when the URL has no ?type.
-const DEFAULT_TYPE = 'BRT'
+// Types shown when the URL has no ?type.
+const DEFAULT_TYPE = DEFAULT_TYPES.join(',')
 
 export const Route = createFileRoute('/')({
   // ?type=BRT,Mikrotrans lists the types; no param means DEFAULT_TYPE and
