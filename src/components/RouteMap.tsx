@@ -5,7 +5,7 @@ import type {
   Map as MlMap,
   Marker,
 } from 'maplibre-gl'
-import type { FeatureCollection } from 'geojson'
+import type { FeatureCollection, Point } from 'geojson'
 import 'maplibre-gl/dist/maplibre-gl.css'
 // maplibre resolves its worker next to its own module, which breaks once Vite
 // pre-bundles it; let Vite bundle the worker and hand maplibre the URL.
@@ -65,6 +65,11 @@ const M_PER_PX_Z0 = 78271.517
 const LABEL_FADE = [LABEL_ZOOM[1] - 0.5, LABEL_ZOOM[1]]
 // How long the glow around a bus lasts after it reports a new GPS position.
 const PING_MS = 1200
+// How long a bus takes to glide to a new position, about one feed interval
+// (1.5 to 2 s) so it keeps moving between updates instead of stop-start.
+const GLIDE_MS = 1600
+// Moves farther than this (degrees, about 550 m) jump instead of gliding.
+const GLIDE_MAX_DEG = 0.005
 // Opacity of the glow when it starts; it fades to 0 from there.
 const PING_OPACITY = 1
 // Outer share of the glow's radius that fades out; inside it the colour is solid.
@@ -92,6 +97,15 @@ function pingPaint(now: number) {
     ] as ExpressionSpecification,
     opacity: ['*', PING_OPACITY, ['-', 1, p]] as ExpressionSpecification,
   }
+}
+
+/** A bus moving from `from` to `to` ([lon, lat]), starting at `t0`. */
+type Glide = { from: [number, number]; to: [number, number]; t0: number }
+
+/** Where a glide is at time `t` (performance.now()), moving at a steady pace. */
+function glideAt({ from, to, t0 }: Glide, t: number): [number, number] {
+  const p = Math.min(1, Math.max(0, (t - t0) / GLIDE_MS))
+  return [from[0] + (to[0] - from[0]) * p, from[1] + (to[1] - from[1]) * p]
 }
 
 /** Opacity going from 0 at zoom `from` to `full` at zoom `to`. */
@@ -260,9 +274,10 @@ export function RouteMap({
   const busData = useRef(busesToGeoJSON([]))
   // Body number -> performance.now() of its last new GPS report.
   const pings = useRef(new Map<string, number>())
-  const pingFrame = useRef(0)
-  // Start of the newest ring; the animation runs until it has faded.
-  const pingLast = useRef(0)
+  // Body number -> the glide from where it was drawn to its latest position.
+  const glides = useRef(new Map<string, Glide>())
+  // The running animation frame for glides and rings, 0 when idle.
+  const frame = useRef(0)
   const [ready, setReady] = useState(false)
   const [typeList, setTypeList] = useState<Array<RouteType>>([])
   const [status, setStatus] = useState<'loading' | 'error' | 'done'>('loading')
@@ -533,7 +548,7 @@ export function RouteMap({
     })
     return () => {
       cancelled = true
-      cancelAnimationFrame(pingFrame.current)
+      cancelAnimationFrame(frame.current)
       map.current?.remove()
       map.current = null
     }
@@ -601,33 +616,71 @@ export function RouteMap({
   )
 
   useEffect(() => {
-    busData.current = busesToGeoJSON(shownBuses)
-    map.current?.getSource<GeoJSONSource>('buses')?.setData(busData.current)
-
-    // Rings follow their bus, so they're rebuilt with every feed message.
     const m = map.current
-    if (!m || matchMedia('(prefers-reduced-motion: reduce)').matches) return
+    const still = matchMedia('(prefers-reduced-motion: reduce)').matches
     const now = performance.now()
-    for (const [no, t0] of pings.current) {
-      if (now - t0 >= PING_MS) pings.current.delete(no)
-      else pingLast.current = Math.max(pingLast.current, t0)
+    busData.current = busesToGeoJSON(shownBuses)
+    // Each bus glides from where it's drawn now to its new position, so it
+    // doesn't jump every feed message. Far moves (a new route snap, a bus
+    // back in the feed) jump straight there.
+    const seen = new Set<string>()
+    for (const f of busData.current.features) {
+      const no = String(f.properties!.no)
+      const to = (f.geometry as Point).coordinates as [number, number]
+      const g = glides.current.get(no)
+      seen.add(no)
+      const at = g ? glideAt(g, now) : to
+      if (!g || g.to[0] !== to[0] || g.to[1] !== to[1]) {
+        const far = Math.hypot(at[0] - to[0], at[1] - to[1]) > GLIDE_MAX_DEG
+        glides.current.set(no, { from: still || far ? to : at, to, t0: now })
+      }
+      // Start from where it's drawn, so nothing flashes at the new spot.
+      ;(f.geometry as Point).coordinates = glideAt(glides.current.get(no)!, now)
     }
-    const rings = busesToGeoJSON(
-      shownBuses.filter((b) => pings.current.has(b.bus_body_no)),
-    )
-    for (const f of rings.features)
-      f.properties!.t0 = pings.current.get(f.properties!.no)
-    m.getSource<GeoJSONSource>('pings')?.setData(rings)
-    if (!rings.features.length || pingFrame.current) return
-    // Animate only while a ring is still growing, so an idle map stays idle.
-    const tick = (t: number) => {
-      const { radius, opacity } = pingPaint(t)
-      m.setPaintProperty('bus-ping', 'circle-radius', radius)
-      m.setPaintProperty('bus-ping', 'circle-opacity', opacity)
-      pingFrame.current =
-        t - pingLast.current < PING_MS ? requestAnimationFrame(tick) : 0
+    for (const no of glides.current.keys())
+      if (!seen.has(no)) glides.current.delete(no)
+    for (const [no, t0] of pings.current)
+      if (now - t0 >= PING_MS || still) pings.current.delete(no)
+    // Rings share their bus's geometry, so they glide along with it.
+    const rings: FeatureCollection = {
+      type: 'FeatureCollection',
+      features: busData.current.features
+        .filter((f) => pings.current.has(String(f.properties!.no)))
+        .map((f) => ({
+          ...f,
+          properties: {
+            ...f.properties,
+            t0: pings.current.get(f.properties!.no),
+          },
+        })),
     }
-    pingFrame.current = requestAnimationFrame(tick)
+    m?.getSource<GeoJSONSource>('pings')?.setData(rings)
+    // The new frame loop reads this message's rings, so drop the old one.
+    cancelAnimationFrame(frame.current)
+    if (!m) return
+    // ponytail: setData on every frame resends all buses to the worker; fine
+    // for a few hundred, throttle or use updateData if "all" (~3,900) lags.
+    /** Draws one frame and keeps going while a bus or a ring still moves. */
+    function draw(t: number) {
+      let busy = false
+      for (const f of busData.current.features) {
+        const g = glides.current.get(String(f.properties!.no))
+        if (!g) continue
+        ;(f.geometry as Point).coordinates = glideAt(g, t)
+        busy ||= t - g.t0 < GLIDE_MS
+      }
+      const mm = map.current
+      mm?.getSource<GeoJSONSource>('buses')?.setData(busData.current)
+      if (mm && rings.features.length) {
+        mm.getSource<GeoJSONSource>('pings')?.setData(rings)
+        const { radius, opacity } = pingPaint(t)
+        mm.setPaintProperty('bus-ping', 'circle-radius', radius)
+        mm.setPaintProperty('bus-ping', 'circle-opacity', opacity)
+        busy ||= [...pings.current.values()].some((t0) => t - t0 < PING_MS)
+      }
+      frame.current = busy && mm ? requestAnimationFrame(draw) : 0
+    }
+    frame.current = requestAnimationFrame(draw)
   }, [shownBuses])
 
   const focusBus = shownBuses.find((b) => b.bus_body_no === selectedBus)
