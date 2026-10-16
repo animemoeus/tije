@@ -9,13 +9,10 @@ import 'maplibre-gl/dist/maplibre-gl.css'
 // maplibre resolves its worker next to its own module, which breaks once Vite
 // pre-bundles it; let Vite bundle the worker and hand maplibre the URL.
 import workerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url'
-import { API } from '#/api'
+import { API, DEFAULT_TYPES } from '#/api'
 import { BusInfo } from './BusInfo'
 
 const WS = API.replace(/^http/, 'ws')
-
-// Route types shown until the user picks others, in the API's /route-types order.
-export const DEFAULT_TYPES = ['BRT', 'Angkutan Umum Integrasi']
 
 type Route = {
   route_code: string
@@ -274,6 +271,8 @@ export function RouteMap({
   const [selectedBus, setSelectedBus] = useState<string | null>(null)
   // Phone tab bar: 'map' leaves the map clear, the others open their sheet.
   const [tab, setTab] = useState<'map' | 'filter' | 'info'>('map')
+  // The sheet's last tab, still shown while the sheet slides away to the map.
+  const [sheet, setSheet] = useState<'filter' | 'info'>('filter')
   // The server sends only the buses of the routes drawn. Sorted so the same
   // routes give the same URL and don't reconnect; no routes means no feed,
   // since a feed without ?routes would send every bus.
@@ -726,7 +725,7 @@ export function RouteMap({
     onTypesChange(next.length === typeList.length ? [] : next)
   }
   /** Hides a panel section on phones unless tab `t` is open. */
-  const onTab = (t: typeof tab) => (tab === t ? '' : 'max-md:hidden')
+  const onTab = (t: typeof sheet) => (sheet === t ? '' : 'max-md:hidden')
   const chip = `flex min-h-11 cursor-pointer select-none items-center px-3 text-sm font-semibold transition-colors duration-150 bg-[var(--field)] text-[var(--ink)] hover:bg-[var(--ground)] has-[:checked]:bg-[var(--accent)] has-[:checked]:text-[var(--accent-ink)] has-[:disabled]:cursor-default has-[:focus-visible]:outline-3 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-[var(--accent)]`
 
   return (
@@ -734,7 +733,12 @@ export function RouteMap({
       {/* On phones the panel is a bottom sheet over a full-screen map that
           opens from the tab bar, one section per tab. */}
       <aside
-        className={`rise-in sheet-up stagger absolute inset-x-0 bottom-[calc(3.5rem+env(safe-area-inset-bottom))] z-10 flex max-h-[70dvh] flex-col gap-4 overflow-y-auto rounded-t-2xl bg-[var(--surface)] px-4 pb-5 pt-2 shadow-[0_-8px_24px_rgb(0_0_0/0.12)] md:static md:max-h-none md:w-80 md:shrink-0 md:gap-8 md:rounded-none md:p-6 md:shadow-none ${tab === 'map' ? 'max-md:hidden' : ''}`}
+        className={`rise-in stagger absolute inset-x-0 bottom-[calc(3.5rem+env(safe-area-inset-bottom))] z-10 flex max-h-[70dvh] flex-col gap-4 overflow-y-auto rounded-t-2xl bg-[var(--surface)] px-4 pb-5 pt-2 shadow-[0_-8px_24px_rgb(0_0_0/0.12)] md:static md:max-h-none md:w-80 md:shrink-0 md:gap-8 md:rounded-none md:p-6 md:shadow-none max-md:transition-[translate,visibility] motion-reduce:transition-none ${
+          // Slides down behind the tab bar, then hides so it can't take focus.
+          tab === 'map'
+            ? 'max-md:invisible max-md:translate-y-full max-md:duration-200 max-md:ease-in'
+            : 'max-md:duration-300 max-md:ease-[cubic-bezier(0.16,1,0.3,1)]'
+        }`}
       >
         <div
           aria-hidden="true"
@@ -973,7 +977,10 @@ export function RouteMap({
             aria-selected={tab === id}
             // Tapping the open tab again closes its sheet. BusInfo closes
             // itself on any tap outside it, so tabs never sit under a card.
-            onClick={() => setTab(tab === id ? 'map' : id)}
+            onClick={() => {
+              setTab(tab === id ? 'map' : id)
+              if (id !== 'map') setSheet(id)
+            }}
             className={`flex h-14 flex-1 cursor-pointer flex-col items-center justify-center gap-0.5 text-[11px] font-semibold transition-colors duration-150 ${tab === id ? 'text-[var(--accent)]' : 'text-[var(--ink-soft)]'} ${focus}`}
           >
             <svg

@@ -1,4 +1,9 @@
-import { HeadContent, Scripts, createRootRoute } from '@tanstack/react-router'
+import {
+  HeadContent,
+  Link,
+  Scripts,
+  createRootRoute,
+} from '@tanstack/react-router'
 import { TanStackRouterDevtoolsPanel } from '@tanstack/react-router-devtools'
 import { TanStackDevtools } from '@tanstack/react-devtools'
 
@@ -54,7 +59,25 @@ export const Route = createRootRoute({
     ],
   }),
   shellComponent: RootDocument,
+  notFoundComponent: NotFound,
 })
+
+/** Page for any URL the router doesn't know, with a way back to the map. */
+function NotFound() {
+  return (
+    <main className="flex h-dvh flex-col items-center justify-center gap-4 p-6 text-center">
+      <h1 className="m-0 text-4xl font-extrabold tracking-tight">
+        Halaman tidak ditemukan
+      </h1>
+      <Link
+        to="/"
+        className="flex h-12 items-center bg-[var(--accent)] px-5 font-bold text-[var(--accent-ink)] no-underline"
+      >
+        Kembali ke peta
+      </Link>
+    </main>
+  )
+}
 
 function RootDocument({ children }: { children: React.ReactNode }) {
   return (

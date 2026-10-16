@@ -1,5 +1,6 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { DEFAULT_TYPES, RouteMap } from '../components/RouteMap'
+import { DEFAULT_TYPES } from '#/api'
+import { RouteMap } from '../components/RouteMap'
 
 // Types shown when the URL has no ?type.
 const DEFAULT_TYPE = DEFAULT_TYPES.join(',')
