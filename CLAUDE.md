@@ -45,6 +45,8 @@ The build output goes to `.output/`. The README's "Deploy with Nitro" section me
   - Popups are built with `textContent` instead of HTML strings so API values never become markup.
 - `src/components/BusInfo.tsx` follows the selected bus with an `EventSource` on `/buses/{bus_body_no}`. A `bus` event replaces the card's data; `gone` means the bus left the feed, and the card then closes the stream so it doesn't reconnect. The "updated" age counts from when the last `bus` event arrived.
 - Basemap tiles come from OpenFreeMap's `positron` style.
+- On phones (below `md`) the panel is a bottom sheet opened from a tab bar (`Peta`, `Rute`, `Info`) in `RouteMap`. The `tab` state decides which panel sections show (`onTab`), a status pill sits at the top, and tapping the map or the open tab closes the sheet. `BusInfo` is its own sheet resting on the tab bar. From `md` up the panel is a sidebar.
+- The app can be installed (Add to Home Screen) through `public/manifest.webmanifest` and the meta tags in `__root.tsx`. There is no service worker, because the data is live and an offline cache wouldn't help. The PNG icons in `public/` are rendered from `favicon.svg` with `npx @resvg/resvg-js-cli`; render them again if the logo changes.
 
 ## Styling
 

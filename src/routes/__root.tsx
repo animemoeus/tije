@@ -17,6 +17,13 @@ export const Route = createRootRoute({
       {
         title: 'Rute Transjakarta',
       },
+      // Installable from the browser menu ("Add to Home Screen") and opened
+      // without browser chrome; iOS reads its own meta tags for that.
+      { name: 'theme-color', content: '#ffffff' },
+      { name: 'mobile-web-app-capable', content: 'yes' },
+      { name: 'apple-mobile-web-app-capable', content: 'yes' },
+      { name: 'apple-mobile-web-app-status-bar-style', content: 'default' },
+      { name: 'apple-mobile-web-app-title', content: 'Tije' },
     ],
     links: [
       {
@@ -28,6 +35,8 @@ export const Route = createRootRoute({
         type: 'image/svg+xml',
         href: '/favicon.svg',
       },
+      { rel: 'manifest', href: '/manifest.webmanifest' },
+      { rel: 'apple-touch-icon', href: '/apple-touch-icon.png' },
     ],
     scripts: [
       {

@@ -112,8 +112,13 @@ export function BusInfo({
       ref={card}
       role="dialog"
       aria-labelledby={titleId}
-      className="rise-in absolute inset-x-3 bottom-[calc(env(safe-area-inset-bottom)+0.75rem)] z-20 max-h-[60dvh] overflow-y-auto bg-[var(--surface)] p-4 text-[var(--ink)] shadow-lg md:inset-x-auto md:bottom-auto md:left-4 md:top-4 md:w-80"
+      // On phones a bottom sheet resting on the tab bar; on desktop a card top left.
+      className="rise-in sheet-up absolute inset-x-0 bottom-[calc(3.5rem+env(safe-area-inset-bottom))] z-20 max-h-[60dvh] overflow-y-auto rounded-t-2xl bg-[var(--surface)] px-4 pb-5 pt-2 text-[var(--ink)] shadow-[0_-8px_24px_rgb(0_0_0/0.12)] md:inset-x-auto md:bottom-auto md:left-4 md:top-4 md:w-80 md:rounded-none md:p-4 md:shadow-lg"
     >
+      <div
+        aria-hidden="true"
+        className="mx-auto mb-3 h-1 w-10 rounded-full bg-[var(--field)] md:hidden"
+      />
       <div className="flex items-start gap-3">
         {bus?.route_code && (
           <span

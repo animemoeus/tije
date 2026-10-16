@@ -269,6 +269,8 @@ export function RouteMap({
     'connecting',
   )
   const [selectedBus, setSelectedBus] = useState<string | null>(null)
+  // Phone tab bar: 'map' leaves the map clear, the others open their sheet.
+  const [tab, setTab] = useState<'map' | 'filter' | 'info'>('map')
   // The server sends only the buses of the routes drawn. Sorted so the same
   // routes give the same URL and don't reconnect; no routes means no feed,
   // since a feed without ?routes would send every bus.
@@ -476,8 +478,10 @@ export function RouteMap({
           const p = e.features?.[0]?.properties
           if (p) setSelectedBus(String(p.no))
         })
-        // A click on the map away from any bus closes the bus card.
+        // A click on the map closes an open sheet, and away from any bus
+        // also the bus card.
         m.on('click', (e) => {
+          setTab('map')
           if (!m.queryRenderedFeatures(e.point, { layers: ['buses'] }).length)
             setSelectedBus(null)
         })
@@ -650,7 +654,7 @@ export function RouteMap({
     const desktop = matchMedia('(min-width: 768px)').matches
     const padding = desktop
       ? { top: 60, right: 60, bottom: 60, left: 380 }
-      : { top: 40, right: 40, bottom: innerHeight * 0.45, left: 40 }
+      : { top: 40, right: 40, bottom: innerHeight * 0.45 + 56, left: 40 }
     const duration = matchMedia('(prefers-reduced-motion: reduce)').matches
       ? 0
       : 600
@@ -721,18 +725,27 @@ export function RouteMap({
       : typeList.map((x) => x.type).filter((x) => x === t || shown.includes(x))
     onTypesChange(next.length === typeList.length ? [] : next)
   }
+  /** Hides a panel section on phones unless tab `t` is open. */
+  const onTab = (t: typeof tab) => (tab === t ? '' : 'max-md:hidden')
   const chip = `flex min-h-11 cursor-pointer select-none items-center px-3 text-sm font-semibold transition-colors duration-150 bg-[var(--field)] text-[var(--ink)] hover:bg-[var(--ground)] has-[:checked]:bg-[var(--accent)] has-[:checked]:text-[var(--accent-ink)] has-[:disabled]:cursor-default has-[:focus-visible]:outline-3 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-[var(--accent)]`
 
   return (
     <div className="relative h-full md:flex">
-      {/* On phones the panel sits at the bottom of a full-screen map, in thumb reach. */}
-      <aside className="rise-in stagger absolute inset-x-3 bottom-[calc(env(safe-area-inset-bottom)+0.75rem)] z-10 flex flex-col gap-3 bg-[var(--surface)] p-3 shadow-lg md:static md:w-80 md:shrink-0 md:gap-8 md:overflow-y-auto md:p-6 md:shadow-none">
-        <h1 className="m-0 text-lg font-extrabold leading-none tracking-tight md:text-4xl">
+      {/* On phones the panel is a bottom sheet over a full-screen map that
+          opens from the tab bar, one section per tab. */}
+      <aside
+        className={`rise-in sheet-up stagger absolute inset-x-0 bottom-[calc(3.5rem+env(safe-area-inset-bottom))] z-10 flex max-h-[70dvh] flex-col gap-4 overflow-y-auto rounded-t-2xl bg-[var(--surface)] px-4 pb-5 pt-2 shadow-[0_-8px_24px_rgb(0_0_0/0.12)] md:static md:max-h-none md:w-80 md:shrink-0 md:gap-8 md:rounded-none md:p-6 md:shadow-none ${tab === 'map' ? 'max-md:hidden' : ''}`}
+      >
+        <div
+          aria-hidden="true"
+          className="mx-auto h-1 w-10 shrink-0 rounded-full bg-[var(--field)] md:hidden"
+        />
+        <h1 className="m-0 text-4xl font-extrabold leading-none tracking-tight max-md:hidden">
           Rute Transjakarta
         </h1>
 
-        <fieldset className="m-0 border-0 p-0">
-          <legend className="sr-only text-sm font-medium text-[var(--ink-soft)] md:not-sr-only md:mb-2">
+        <fieldset className={`m-0 border-0 p-0 ${onTab('filter')}`}>
+          <legend className="mb-3 text-base font-bold md:mb-2 md:text-sm md:font-medium md:text-[var(--ink-soft)]">
             Filter rute
           </legend>
           {/* Native checkboxes inside chips: they wrap to fit the small
@@ -770,7 +783,7 @@ export function RouteMap({
           </div>
         </fieldset>
 
-        <div aria-live="polite">
+        <div aria-live="polite" className={onTab('info')}>
           {status === 'error' ? (
             <div
               role="alert"
@@ -804,19 +817,19 @@ export function RouteMap({
                     key={count}
                     className="fade-in flex items-baseline gap-2"
                   >
-                    <span className="text-xl font-extrabold leading-none tracking-tighter tabular-nums md:text-7xl">
+                    <span className="text-5xl font-extrabold leading-none tracking-tighter tabular-nums md:text-7xl">
                       {count}
                     </span>
                     <span className="font-semibold">rute di peta</span>
                   </span>
                 )}
               </p>
-              <p className="mb-0 mt-3 hidden text-sm text-[var(--ink-soft)] md:block">
+              <p className="mb-0 mt-3 text-sm text-[var(--ink-soft)]">
                 {status === 'done' && count === 0
                   ? 'Tidak ada rute untuk jenis ini. Pilih jenis lain.'
                   : 'Klik garis atau bus di peta untuk melihat detailnya.'}
               </p>
-              <p className="mb-0 mt-1 text-sm font-semibold md:mt-5 md:text-base">
+              <p className="mb-0 mt-5 text-base font-semibold">
                 {feed === 'open'
                   ? `${shownBuses.length} bus aktif di rute ini`
                   : 'Menunggu data bus…'}
@@ -824,7 +837,7 @@ export function RouteMap({
             </>
           )}
         </div>
-        <footer className="flex flex-col gap-2 md:mt-auto">
+        <footer className={`flex flex-col gap-2 md:mt-auto ${onTab('info')}`}>
           <p
             aria-live="polite"
             className="m-0 flex items-center gap-2 text-xs font-semibold text-[var(--ink-soft)]"
@@ -898,6 +911,93 @@ export function RouteMap({
           <BusInfo busNo={selectedBus} onClose={() => setSelectedBus(null)} />
         )}
       </div>
+
+      {/* Phone status pill under the notch; the full status is in the Info tab. */}
+      <div
+        aria-hidden={status !== 'error'}
+        className="fade-in absolute left-3 top-[calc(env(safe-area-inset-top)+0.75rem)] z-10 flex min-h-10 items-center gap-2 rounded-full bg-[var(--surface)] py-1 pl-4 pr-1.5 text-sm font-semibold shadow-md md:hidden"
+      >
+        {status === 'error' ? (
+          <>
+            <span>Gagal memuat rute</span>
+            <button
+              type="button"
+              onClick={() => setAttempt((a) => a + 1)}
+              className={`h-8 cursor-pointer rounded-full bg-[var(--accent)] px-3 font-bold text-[var(--accent-ink)] active:scale-95 ${focus}`}
+            >
+              Coba lagi
+            </button>
+          </>
+        ) : status === 'loading' ? (
+          <>
+            <span className="h-4 w-4 animate-spin rounded-full border-2 border-[var(--field)] border-t-[var(--accent)] motion-reduce:animate-none" />
+            <span className="pr-2.5">Memuat rute…</span>
+          </>
+        ) : (
+          <>
+            <span
+              className={`h-2 w-2 shrink-0 rounded-full ${
+                feed === 'open'
+                  ? 'bg-emerald-500'
+                  : feed === 'closed'
+                    ? 'bg-red-500'
+                    : 'animate-pulse bg-amber-500 motion-reduce:animate-none'
+              }`}
+            />
+            <span className="pr-2.5 tabular-nums">
+              {feed === 'open' ? `${shownBuses.length} bus` : 'Menyambungkan…'}
+              <span className="text-[var(--ink-soft)]"> · {count} rute</span>
+            </span>
+          </>
+        )}
+      </div>
+
+      <nav
+        role="tablist"
+        aria-label="Menu"
+        className="absolute inset-x-0 bottom-0 z-30 flex select-none border-t border-[var(--field)] bg-[var(--surface)] pb-[env(safe-area-inset-bottom)] md:hidden"
+      >
+        {(
+          [
+            [
+              'map',
+              'Peta',
+              'M9 4 3 6v14l6-2 6 2 6-2V4l-6 2-6-2Zm0 0v14m6-12v14',
+            ],
+            ['filter', 'Rute', 'M4 6h16M7 12h10m-7 6h4'],
+            [
+              'info',
+              'Info',
+              'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Zm0-10v6m0-9.5v.5',
+            ],
+          ] as const
+        ).map(([id, label, icon]) => (
+          <button
+            key={id}
+            type="button"
+            role="tab"
+            aria-selected={tab === id}
+            // Tapping the open tab again closes its sheet. BusInfo closes
+            // itself on any tap outside it, so tabs never sit under a card.
+            onClick={() => setTab(tab === id ? 'map' : id)}
+            className={`flex h-14 flex-1 cursor-pointer flex-col items-center justify-center gap-0.5 text-[11px] font-semibold transition-colors duration-150 ${tab === id ? 'text-[var(--accent)]' : 'text-[var(--ink-soft)]'} ${focus}`}
+          >
+            <svg
+              aria-hidden="true"
+              viewBox="0 0 24 24"
+              className="h-6 w-6"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={tab === id ? 2.25 : 1.75}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d={icon} />
+            </svg>
+            {label}
+          </button>
+        ))}
+      </nav>
     </div>
   )
 }
