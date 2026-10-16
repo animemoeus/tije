@@ -19,6 +19,7 @@ type Route = {
   route_code: string
   route_name: string
   route_color: string
+  route_text_color: string
   directions: Array<{
     trip_id: string | null
     headsign: string | null
@@ -26,6 +27,14 @@ type Route = {
   }>
 }
 type RouteType = { type: string; routes: number }
+type Stop = {
+  stop_id: string
+  name: string
+  lat: number
+  lon: number
+  type: string
+  routes: Array<string>
+}
 type Bus = {
   bus_body_no: string
   route_code: string
@@ -57,6 +66,11 @@ const ROUTE_OPACITY = 0.25
 // these.
 const DIM_ROUTE_OPACITY = 0.08
 const DIM_BUS_OPACITY = 0.15
+// Bus stops show up from this zoom; there are thousands of them. BRT haltes
+// are few, so they show at every zoom.
+const BUS_STOP_ZOOM = 14
+// Stop names appear from this zoom.
+const STOP_LABEL_ZOOM = 15
 // The user's dot and accuracy circle, Google Maps blue.
 const USER_COLOR = '#1a73e8'
 // Metres per pixel at zoom 0 on the equator, for maplibre's 512 px tiles.
@@ -285,6 +299,64 @@ function toGeoJSON(routes: Array<Route>): FeatureCollection {
   }
 }
 
+/** One point per stop; `halte` marks the BRT haltes, the rest are bus stops. */
+function stopsToGeoJSON(stops: Array<Stop>): FeatureCollection {
+  return {
+    type: 'FeatureCollection',
+    features: stops.map((s) => ({
+      type: 'Feature' as const,
+      properties: {
+        name: s.name,
+        routes: s.routes.join(','),
+        halte: s.type === 'halte',
+      },
+      geometry: { type: 'Point' as const, coordinates: [s.lon, s.lat] },
+    })),
+  }
+}
+
+/** Popup content with a bold title over one line of text. */
+function textCard(title: string, body: string) {
+  const el = document.createElement('div')
+  el.innerHTML = '<strong></strong><span></span>'
+  el.querySelector('strong')!.textContent = title
+  el.querySelector('span')!.textContent = body
+  return el
+}
+
+/**
+ * Popup content for a stop: what kind it is and how many routes stop there,
+ * its name, and one chip per route code in that route's colours. Built with
+ * textContent so API values never become markup.
+ */
+function stopCard(
+  name: string,
+  halte: boolean,
+  codes: Array<string>,
+  routes: Array<Route>,
+) {
+  const el = document.createElement('div')
+  const kind = document.createElement('small')
+  kind.className = 'stop-kind'
+  kind.textContent = `${halte ? 'Halte BRT' : 'Halte bus'} · ${codes.length} rute`
+  const title = document.createElement('strong')
+  title.textContent = name
+  const chips = document.createElement('ul')
+  chips.className = 'stop-routes'
+  chips.setAttribute('aria-label', 'Rute yang berhenti di sini')
+  for (const code of codes) {
+    const r = routes.find((x) => x.route_code === code)
+    const chip = document.createElement('li')
+    chip.textContent = code
+    if (r) chip.title = r.route_name
+    chip.style.background = `#${r?.route_color || '555555'}`
+    chip.style.color = `#${r?.route_text_color || 'ffffff'}`
+    chips.append(chip)
+  }
+  el.append(kind, title, chips)
+  return el
+}
+
 const KM_PER_DEG = 111.32
 
 /**
@@ -416,6 +488,7 @@ export function RouteMap({
     'connecting',
   )
   const [selectedBus, setSelectedBus] = useState<string | null>(null)
+  const [showStops, setShowStops] = useState(true)
   // Phone tab bar: 'map' leaves the map clear, the others open their sheet.
   const [tab, setTab] = useState<'map' | 'filter' | 'info'>('map')
   // The sheet's last tab, still shown while the sheet slides away to the map.
@@ -520,6 +593,52 @@ export function RouteMap({
           source: 'focus',
           layout: { 'line-cap': 'round', 'line-join': 'round' },
           paint: { 'line-color': ['get', 'color'], 'line-width': 5 },
+        })
+        // Stops; the "Halte" chip shows or hides them.
+        m.addSource('stops', { type: 'geojson', data: stopsToGeoJSON([]) })
+        const halte = (
+          yes: number | string,
+          no: number | string,
+        ): ExpressionSpecification => ['case', ['get', 'halte'], yes, no]
+        m.addLayer({
+          id: 'stops',
+          type: 'circle',
+          source: 'stops',
+          filter: ['any', ['get', 'halte'], ['>=', ['zoom'], BUS_STOP_ZOOM]],
+          layout: { visibility: 'none' },
+          paint: {
+            'circle-radius': [
+              'interpolate',
+              ['linear'],
+              ['zoom'],
+              11,
+              halte(2.5, 2),
+              16,
+              halte(6, 4),
+            ],
+            'circle-color': '#ffffff',
+            'circle-stroke-color': halte('#1f2937', '#6b7280'),
+            'circle-stroke-width': halte(2, 1.25),
+          },
+        })
+        m.addLayer({
+          id: 'stop-label',
+          type: 'symbol',
+          source: 'stops',
+          minzoom: STOP_LABEL_ZOOM,
+          layout: {
+            visibility: 'none',
+            'text-field': ['get', 'name'],
+            'text-font': ['Noto Sans Regular'],
+            'text-size': 11,
+            'text-anchor': 'top',
+            'text-offset': [0, 0.6],
+          },
+          paint: {
+            'text-color': '#374151',
+            'text-halo-color': '#ffffff',
+            'text-halo-width': 1.5,
+          },
         })
         // How far off the user's location may be, drawn under the buses.
         m.addSource('user-accuracy', { type: 'geojson', data: toGeoJSON([]) })
@@ -633,24 +752,37 @@ export function RouteMap({
       })
       const popup = (
         at: Parameters<InstanceType<typeof Popup>['setLngLat']>[0],
-        title: string,
-        body: string,
+        el: HTMLElement,
       ) => {
-        const el = document.createElement('div')
-        el.innerHTML = '<strong></strong><span></span>'
-        el.querySelector('strong')!.textContent = title
-        el.querySelector('span')!.textContent = body
         new Popup({ closeButton: false, maxWidth: '260px' })
           .setLngLat(at)
           .setDOMContent(el)
           .addTo(m)
       }
       m.on('click', 'routes', (e) => {
-        // A click on a bus over a route belongs to the bus card only.
+        // A click on a bus or stop over a route goes to the bus or stop.
+        if (
+          m.queryRenderedFeatures(e.point, { layers: ['buses', 'stops'] })
+            .length
+        )
+          return
+        const p = e.features?.[0]?.properties
+        if (p) popup(e.lngLat, textCard(String(p.code), String(p.name)))
+      })
+      m.on('click', 'stops', (e) => {
         if (m.queryRenderedFeatures(e.point, { layers: ['buses'] }).length)
           return
         const p = e.features?.[0]?.properties
-        if (p) popup(e.lngLat, String(p.code), String(p.name))
+        if (p)
+          popup(
+            e.lngLat,
+            stopCard(
+              String(p.name),
+              Boolean(p.halte),
+              String(p.routes).split(',').filter(Boolean),
+              routesRef.current,
+            ),
+          )
       })
       m.on('click', 'buses', (e) => {
         const p = e.features?.[0]?.properties
@@ -663,7 +795,7 @@ export function RouteMap({
         if (!m.queryRenderedFeatures(e.point, { layers: ['buses'] }).length)
           setSelectedBus(null)
       })
-      for (const layer of ['routes', 'buses']) {
+      for (const layer of ['routes', 'stops', 'buses']) {
         m.on(
           'mouseenter',
           layer,
@@ -889,6 +1021,21 @@ export function RouteMap({
       selectedBus ? DIM_ROUTE_OPACITY : ROUTE_OPACITY,
     )
     m.setPaintProperty('buses', 'circle-opacity', dim)
+    m.setPaintProperty(
+      'stops',
+      'circle-opacity',
+      selectedBus ? DIM_BUS_OPACITY : 1,
+    )
+    m.setPaintProperty(
+      'stops',
+      'circle-stroke-opacity',
+      selectedBus ? DIM_BUS_OPACITY : 1,
+    )
+    m.setPaintProperty(
+      'stop-label',
+      'text-opacity',
+      selectedBus ? DIM_BUS_OPACITY : 1,
+    )
     m.setFilter('bus-ping', selectedBus ? on : null)
     m.setPaintProperty('buses', 'circle-stroke-opacity', dim)
     m.setPaintProperty('bus-label', 'text-opacity', fadeIn(LABEL_FADE, dim))
@@ -966,6 +1113,29 @@ export function RouteMap({
       })
     return () => ctrl.abort()
   }, [ready, typeKey, attempt])
+
+  // Stops of the chosen types, shown unless the "Halte" chip is unticked.
+  useEffect(() => {
+    const m = map.current
+    if (!m || !ready) return
+    const visibility = showStops ? 'visible' : 'none'
+    m.setLayoutProperty('stops', 'visibility', visibility)
+    m.setLayoutProperty('stop-label', 'visibility', visibility)
+    if (!showStops) return
+    const ctrl = new AbortController()
+    const qs = typeKey ? `?type=${encodeURIComponent(typeKey)}` : ''
+    fetch(`${API}/stops${qs}`, { signal: ctrl.signal })
+      .then((r) => (r.ok ? r.json() : Promise.reject(r)))
+      .then((d: { stops: Array<Stop> }) =>
+        map.current
+          ?.getSource<GeoJSONSource>('stops')
+          ?.setData(stopsToGeoJSON(d.stops)),
+      )
+      .catch(() => {
+        if (!ctrl.signal.aborted) setNotice('Gagal memuat halte.')
+      })
+    return () => ctrl.abort()
+  }, [ready, typeKey, showStops, attempt])
 
   const focus =
     'outline-none focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]'
@@ -1183,6 +1353,21 @@ export function RouteMap({
               )
             })}
           </div>
+        </fieldset>
+
+        <fieldset className={`m-0 border-0 p-0 ${onTab('filter')}`}>
+          <legend className="mb-3 text-base font-bold md:mb-2 md:text-sm md:font-medium md:text-[var(--ink-soft)]">
+            Lapisan
+          </legend>
+          <label className={`${chip} w-fit`}>
+            <input
+              type="checkbox"
+              className="sr-only"
+              checked={showStops}
+              onChange={() => setShowStops((v) => !v)}
+            />
+            Halte
+          </label>
         </fieldset>
 
         <div aria-live="polite" className={onTab('info')}>

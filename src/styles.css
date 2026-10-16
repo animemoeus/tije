@@ -44,8 +44,6 @@ a:focus-visible {
 
 /* MapLibre popups and controls follow the theme tokens. */
 .maplibregl-popup-content {
-  display: grid;
-  gap: 2px;
   padding: 12px 14px;
   border-radius: 0;
   background: var(--surface);
@@ -53,9 +51,43 @@ a:focus-visible {
   font: 500 15px/1.4 var(--font-sans);
 }
 
+/* The popup's content is one div; stack what's inside it. */
+.maplibregl-popup-content > div {
+  display: grid;
+  gap: 2px;
+}
+
 .maplibregl-popup-content strong {
   font-size: 20px;
   font-weight: 800;
+}
+
+/* Stop popup: its kind above the name, then a chip per route. */
+.stop-kind {
+  color: var(--ink-soft);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.stop-routes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  max-height: 9rem;
+  margin: 8px 0 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.stop-routes li {
+  padding: 2px 7px;
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums;
 }
 
 .maplibregl-popup-tip {
