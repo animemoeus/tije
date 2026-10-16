@@ -65,11 +65,25 @@ const M_PER_PX_Z0 = 78271.517
 const LABEL_FADE = [LABEL_ZOOM[1] - 0.5, LABEL_ZOOM[1]]
 // How long the glow around a bus lasts after it reports a new GPS position.
 const PING_MS = 1200
-// How long a bus takes to glide to a new position, about one feed interval
-// (1.5 to 2 s) so it keeps moving between updates instead of stop-start.
-const GLIDE_MS = 1600
-// Moves farther than this (degrees, about 550 m) jump instead of gliding.
-const GLIDE_MAX_DEG = 0.005
+// How buses glide between reports, after the bus layer of transit.oyenza.com.
+// A glide lasts one report interval of that bus (averaged, held between the
+// min and max), so it arrives about when the next report does. Until a bus has
+// an interval, it uses GLIDE_MS.
+const GLIDE_MS = 3000
+const GLIDE_MIN_MS = 1000
+const GLIDE_MAX_MS = 5000
+// Report gaps outside this range (ms) don't count towards the interval.
+const GAP_RANGE = [400, 20000]
+// A move farther than JUMP_M, or farther than 250 m at over JUMP_SPEED m/s,
+// jumps instead of gliding: a new route snap or a bus back in the feed.
+const JUMP_M = 1500
+const JUMP_SPEED = 35
+// A bus within SNAP_M of its route line glides along the line, so it takes
+// the bends instead of cutting across them.
+const SNAP_M = 40
+// The heading arrow turns towards where the bus is going with this time
+// constant (ms), so it swings round instead of snapping.
+const TURN_MS = 150
 // Opacity of the glow when it starts; it fades to 0 from there.
 const PING_OPACITY = 1
 // Outer share of the glow's radius that fades out; inside it the colour is solid.
@@ -99,13 +113,110 @@ function pingPaint(now: number) {
   }
 }
 
-/** A bus moving from `from` to `to` ([lon, lat]), starting at `t0`. */
-type Glide = { from: [number, number]; to: [number, number]; t0: number }
+type Vec = [number, number]
+/**
+ * A bus moving along `path` ([lon, lat], from where it was drawn to its new
+ * position) over `ms` from `t0`. `len` is the distance in metres from the
+ * start to each point, `k` the cos(latitude) that scales longitude to metres,
+ * `iv` the bus's averaged report interval, `h` the heading drawn and `moved`
+ * whether it has ever glided.
+ */
+type Glide = {
+  path: Array<Vec>
+  len: Array<number>
+  k: number
+  t0: number
+  ms: number
+  iv: number
+  h: number
+  moved: boolean
+}
 
-/** Where a glide is at time `t` (performance.now()), moving at a steady pace. */
-function glideAt({ from, to, t0 }: Glide, t: number): [number, number] {
-  const p = Math.min(1, Math.max(0, (t - t0) / GLIDE_MS))
-  return [from[0] + (to[0] - from[0]) * p, from[1] + (to[1] - from[1]) * p]
+const M_PER_DEG = 111320
+
+/** Distance in metres between two [lon, lat] points `k` = cos(latitude) apart. */
+function metres(a: Vec, b: Vec, k: number) {
+  return Math.hypot((b[0] - a[0]) * k, b[1] - a[1]) * M_PER_DEG
+}
+
+/**
+ * The point of `line` ([lon, lat]) nearest to `p`: the segment it's on, how
+ * far along the line that is and how far `p` is off it, in metres.
+ */
+function project(line: Array<Vec>, p: Vec, k: number) {
+  let best = { i: 0, along: 0, off: Infinity }
+  let run = 0
+  for (let i = 0; i + 1 < line.length; i++) {
+    const [ax, ay] = [line[i][0] * k, line[i][1]]
+    const [dx, dy] = [line[i + 1][0] * k - ax, line[i + 1][1] - ay]
+    const l2 = dx * dx + dy * dy
+    const u = l2
+      ? Math.min(1, Math.max(0, ((p[0] * k - ax) * dx + (p[1] - ay) * dy) / l2))
+      : 0
+    const off = Math.hypot(p[0] * k - ax - u * dx, p[1] - ay - u * dy)
+    const seg = Math.sqrt(l2)
+    if (off < best.off) best = { i, along: run + u * seg, off }
+    run += seg
+  }
+  return {
+    i: best.i,
+    along: best.along * M_PER_DEG,
+    off: best.off * M_PER_DEG,
+  }
+}
+
+/**
+ * The way from `at` to `to`: along the route `line` when both sit on it and
+ * `to` is a believable distance ahead, otherwise straight.
+ */
+function glidePath(at: Vec, to: Vec, line: Array<Vec> | null, k: number) {
+  if (line && line.length > 1) {
+    const a = project(line, at, k)
+    const b = project(line, to, k)
+    const ahead = b.along - a.along
+    if (
+      a.off < SNAP_M &&
+      b.off < SNAP_M &&
+      ahead >= -10 &&
+      ahead <= 3 * metres(at, to, k) + 120
+    )
+      return [at, ...line.slice(a.i + 1, b.i + 1), to]
+  }
+  return [at, to]
+}
+
+/**
+ * Where a glide is at time `t` (performance.now()) and its heading there in
+ * degrees, null once it has arrived. It moves at a steady pace: easing each
+ * stretch would make the bus slow to a stop at every report and then rush.
+ */
+function glideAt(g: Glide, t: number): { at: Vec; heading: number | null } {
+  const { path, len, k } = g
+  const total = len[len.length - 1]
+  const p = g.ms ? Math.min(1, Math.max(0, (t - g.t0) / g.ms)) : 1
+  if (p >= 1 || total < 1.5) return { at: path[path.length - 1], heading: null }
+  const d = p * total
+  let i = 1
+  while (i < len.length - 1 && len[i] < d) i++
+  const [a, b] = [path[i - 1], path[i]]
+  const u = len[i] > len[i - 1] ? (d - len[i - 1]) / (len[i] - len[i - 1]) : 1
+  const heading = (Math.atan2((b[0] - a[0]) * k, b[1] - a[1]) * 180) / Math.PI
+  return {
+    at: [a[0] + (b[0] - a[0]) * u, a[1] + (b[1] - a[1]) * u],
+    heading: (heading + 360) % 360,
+  }
+}
+
+/** A glide along `path`, with the distances `glideAt` walks. */
+function makeGlide(
+  path: Array<Vec>,
+  k: number,
+  rest: Omit<Glide, 'path' | 'len' | 'k'>,
+): Glide {
+  const len = [0]
+  for (let i = 1; i < path.length; i++)
+    len.push(len[i - 1] + metres(path[i - 1], path[i], k))
+  return { path, len, k, ...rest }
 }
 
 /** Opacity going from 0 at zoom `from` to `full` at zoom `to`. */
@@ -178,37 +289,51 @@ const KM_PER_DEG = 111.32
 
 /**
  * The part of a bus's route still ahead of it, as [lon, lat] from the bus to
- * the end of its direction. The direction is the one with the bus's trip_id;
- * short trips have their own trip_id, so then the one with its headsign, and
- * failing that the one passing closest to the bus.
+ * the end of its direction (see busDirection).
  */
 function pathAhead(bus: Bus, routes: Array<Route>): Array<[number, number]> {
-  const dirs =
-    routes.find((r) => r.route_code === bus.route_code)?.directions ?? []
+  const dir = busDirection(bus, routes)
+  if (!dir) return []
+  const { i } = nearestPoint(dir.path, bus)
+  return [
+    [bus.longitude, bus.latitude],
+    ...dir.path.slice(i + 1).map(([lat, lon]): [number, number] => [lon, lat]),
+  ]
+}
+
+/**
+ * The index of the point of `path` ([lat, lon]) nearest to the bus, and its
+ * squared distance in degrees.
+ */
+function nearestPoint(path: Array<[number, number]>, bus: Bus) {
   // ponytail: plain degree distance to the nearest path point; fine at
   // Jakarta's latitude. A loop that runs the same road twice can be cut at
   // the wrong pass; next_stops would pick the right one.
-  const nearest = (path: Array<[number, number]>) => {
-    let best = { i: -1, d: Infinity }
-    path.forEach(([lat, lon], i) => {
-      const d = (lat - bus.latitude) ** 2 + (lon - bus.longitude) ** 2
-      if (d < best.d) best = { i, d }
-    })
-    return best
-  }
-  const dir =
+  let best = { i: -1, d: Infinity }
+  path.forEach(([lat, lon], i) => {
+    const d = (lat - bus.latitude) ** 2 + (lon - bus.longitude) ** 2
+    if (d < best.d) best = { i, d }
+  })
+  return best
+}
+
+/**
+ * The direction of its route a bus is driving: the one with the bus's
+ * trip_id; short trips have their own trip_id, so then the one with its
+ * headsign, and failing that the one passing closest to the bus.
+ */
+function busDirection(bus: Bus, routes: Array<Route>) {
+  const dirs =
+    routes.find((r) => r.route_code === bus.route_code)?.directions ?? []
+  const nearest = (path: Array<[number, number]>) => nearestPoint(path, bus)
+  return (
     dirs.find((d) => bus.trip_id && d.trip_id === bus.trip_id) ??
     dirs.find((d) => bus.trip_headsign && d.headsign === bus.trip_headsign) ??
     dirs.reduce<(typeof dirs)[number] | undefined>(
       (a, d) => (!a || nearest(d.path).d < nearest(a.path).d ? d : a),
       undefined,
     )
-  if (!dir) return []
-  const { i } = nearest(dir.path)
-  return [
-    [bus.longitude, bus.latitude],
-    ...dir.path.slice(i + 1).map(([lat, lon]): [number, number] => [lon, lat]),
-  ]
+  )
 }
 
 /** Box around every path point, widened by `km` on each side, as [[w, s], [e, n]]. */
@@ -278,6 +403,8 @@ export function RouteMap({
   const glides = useRef(new Map<string, Glide>())
   // The running animation frame for glides and rings, 0 when idle.
   const frame = useRef(0)
+  // Time of the last frame drawn, for turning the heading arrows.
+  const lastFrame = useRef(0)
   const [ready, setReady] = useState(false)
   const [typeList, setTypeList] = useState<Array<RouteType>>([])
   const [status, setStatus] = useState<'loading' | 'error' | 'done'>('loading')
@@ -620,23 +747,51 @@ export function RouteMap({
     const still = matchMedia('(prefers-reduced-motion: reduce)').matches
     const now = performance.now()
     busData.current = busesToGeoJSON(shownBuses)
-    // Each bus glides from where it's drawn now to its new position, so it
-    // doesn't jump every feed message. Far moves (a new route snap, a bus
-    // back in the feed) jump straight there.
+    // Each bus glides from where it's drawn now to its new position, along
+    // its route line when it's on one. Far or implausibly fast moves jump.
     const seen = new Set<string>()
-    for (const f of busData.current.features) {
-      const no = String(f.properties!.no)
-      const to = (f.geometry as Point).coordinates as [number, number]
+    busData.current.features.forEach((f, idx) => {
+      const bus = shownBuses[idx]
+      const no = bus.bus_body_no
+      const to: Vec = [bus.longitude, bus.latitude]
+      const k = Math.cos((bus.latitude * Math.PI) / 180)
       const g = glides.current.get(no)
       seen.add(no)
-      const at = g ? glideAt(g, now) : to
-      if (!g || g.to[0] !== to[0] || g.to[1] !== to[1]) {
-        const far = Math.hypot(at[0] - to[0], at[1] - to[1]) > GLIDE_MAX_DEG
-        glides.current.set(no, { from: still || far ? to : at, to, t0: now })
+      const last = g?.path[g.path.length - 1]
+      if (!g || last![0] !== to[0] || last![1] !== to[1]) {
+        const at = g ? glideAt(g, now).at : to
+        const gap = g ? now - g.t0 : 0
+        const iv =
+          gap >= GAP_RANGE[0] && gap <= GAP_RANGE[1]
+            ? g!.iv
+              ? g!.iv * 0.65 + gap * 0.35
+              : gap
+            : (g?.iv ?? 0)
+        const d = metres(at, to, k)
+        const jump =
+          still ||
+          d > JUMP_M ||
+          (d > 250 && d / Math.max(1, gap / 1000) > JUMP_SPEED)
+        const dir = jump ? undefined : busDirection(bus, routesRef.current)
+        const line = dir?.path.map(([lat, lon]): Vec => [lon, lat]) ?? null
+        glides.current.set(
+          no,
+          makeGlide(jump ? [to] : glidePath(at, to, line, k), k, {
+            t0: now,
+            ms: jump
+              ? 0
+              : Math.min(GLIDE_MAX_MS, Math.max(GLIDE_MIN_MS, iv || GLIDE_MS)),
+            iv,
+            h: g?.h ?? bus.bearing,
+            moved: (g?.moved ?? false) || (!jump && d > 3),
+          }),
+        )
       }
       // Start from where it's drawn, so nothing flashes at the new spot.
-      ;(f.geometry as Point).coordinates = glideAt(glides.current.get(no)!, now)
-    }
+      const g2 = glides.current.get(no)!
+      ;(f.geometry as Point).coordinates = glideAt(g2, now).at
+      f.properties!.bearing = g2.h
+    })
     for (const no of glides.current.keys())
       if (!seen.has(no)) glides.current.delete(no)
     for (const [no, t0] of pings.current)
@@ -663,12 +818,22 @@ export function RouteMap({
     /** Draws one frame and keeps going while a bus or a ring still moves. */
     function draw(t: number) {
       let busy = false
-      for (const f of busData.current.features) {
+      const turn =
+        1 - Math.exp(-Math.min(1000, t - lastFrame.current) / TURN_MS)
+      lastFrame.current = t
+      busData.current.features.forEach((f, idx) => {
         const g = glides.current.get(String(f.properties!.no))
-        if (!g) continue
-        ;(f.geometry as Point).coordinates = glideAt(g, t)
-        busy ||= t - g.t0 < GLIDE_MS
-      }
+        if (!g) return
+        const { at, heading } = glideAt(g, t)
+        ;(f.geometry as Point).coordinates = at
+        // Point where the bus is going while it moves; once it stops, keep
+        // that heading, or the reported one if it has never moved.
+        const aim = heading ?? (g.moved ? g.h : shownBuses[idx].bearing)
+        const diff = ((aim - g.h + 540) % 360) - 180
+        g.h = still ? aim : (g.h + diff * turn + 360) % 360
+        f.properties!.bearing = g.h
+        busy ||= heading !== null || Math.abs(diff) > 0.5
+      })
       const mm = map.current
       mm?.getSource<GeoJSONSource>('buses')?.setData(busData.current)
       if (mm && rings.features.length) {
