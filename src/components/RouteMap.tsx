@@ -70,8 +70,11 @@ const DIM_BUS_OPACITY = 0.15
 // Bus stops show up from this zoom; there are thousands of them. BRT haltes
 // are few, so they show at every zoom.
 const BUS_STOP_ZOOM = 14
-// Stop names appear from this zoom.
+// Stop names appear from this zoom; BRT halte names from HALTE_LABEL_ZOOM.
 const STOP_LABEL_ZOOM = 15
+const HALTE_LABEL_ZOOM = 13
+// Transjakarta blue (--accent in light mode) for BRT haltes and the open stop.
+const HALTE_COLOR = '#0057b8'
 // The user's dot and accuracy circle, Google Maps blue.
 const USER_COLOR = '#1a73e8'
 // Metres per pixel at zoom 0 on the equator, for maplibre's 512 px tiles.
@@ -347,7 +350,11 @@ function stopCard(
   const chips = document.createElement('ul')
   chips.className = 'stop-routes'
   chips.setAttribute('aria-label', 'Rute yang berhenti di sini')
-  for (const code of codes) {
+  // Natural order, so 2 comes before 10 and 1A sits next to 1.
+  const sorted = [...codes].sort((a, b) =>
+    a.localeCompare(b, 'id', { numeric: true }),
+  )
+  for (const code of sorted) {
     const r = routes.find((x) => x.route_code === code)
     const chip = document.createElement('li')
     chip.textContent = code
@@ -627,30 +634,66 @@ export function RouteMap({
               ['linear'],
               ['zoom'],
               11,
-              halte(2.5, 2),
+              halte(3, 2),
               16,
-              halte(6, 4),
+              halte(7, 4),
             ],
-            'circle-color': '#ffffff',
-            'circle-stroke-color': halte('#1f2937', '#6b7280'),
+            // Haltes are filled blue and bigger; bus stops stay small and
+            // hollow, so the two differ in size and fill, not hue alone.
+            'circle-color': halte(HALTE_COLOR, '#ffffff'),
+            'circle-stroke-color': halte('#ffffff', '#6b7280'),
             'circle-stroke-width': halte(2, 1.25),
+          },
+        })
+        // The dots are only a few pixels wide; this invisible ring around
+        // each one takes the clicks, so a fingertip can hit it.
+        m.addLayer({
+          id: 'stops-hit',
+          type: 'circle',
+          source: 'stops',
+          filter: ['any', ['get', 'halte'], ['>=', ['zoom'], BUS_STOP_ZOOM]],
+          layout: { visibility: 'none' },
+          paint: { 'circle-radius': 14, 'circle-opacity': 0 },
+        })
+        // A ring around the stop whose popup is open.
+        m.addSource('stop-focus', { type: 'geojson', data: toGeoJSON([]) })
+        m.addLayer({
+          id: 'stop-focus',
+          type: 'circle',
+          source: 'stop-focus',
+          paint: {
+            'circle-radius': 12,
+            'circle-color': HALTE_COLOR,
+            'circle-opacity': 0.15,
+            'circle-stroke-color': HALTE_COLOR,
+            'circle-stroke-width': 2,
           },
         })
         m.addLayer({
           id: 'stop-label',
           type: 'symbol',
           source: 'stops',
-          minzoom: STOP_LABEL_ZOOM,
+          minzoom: HALTE_LABEL_ZOOM,
+          filter: ['any', ['get', 'halte'], ['>=', ['zoom'], STOP_LABEL_ZOOM]],
           layout: {
             visibility: 'none',
             'text-field': ['get', 'name'],
-            'text-font': ['Noto Sans Regular'],
-            'text-size': 11,
-            'text-anchor': 'top',
-            'text-offset': [0, 0.6],
+            'text-font': [
+              'case',
+              ['get', 'halte'],
+              ['literal', ['Noto Sans Bold']],
+              ['literal', ['Noto Sans Regular']],
+            ],
+            'text-size': halte(12, 11),
+            'text-max-width': 8,
+            // Try below the dot first, then the other sides, before giving up.
+            'text-variable-anchor': ['top', 'bottom', 'left', 'right'],
+            'text-radial-offset': 0.8,
+            // Haltes win when names collide.
+            'symbol-sort-key': halte(0, 1),
           },
           paint: {
-            'text-color': '#374151',
+            'text-color': halte('#0d1b2a', '#4a5866'),
             'text-halo-color': '#ffffff',
             'text-halo-width': 1.5,
           },
@@ -765,39 +808,57 @@ export function RouteMap({
         })
         setReady(true)
       })
+      /** Opens a popup with `el` at `at` and returns it. */
       const popup = (
         at: Parameters<InstanceType<typeof Popup>['setLngLat']>[0],
         el: HTMLElement,
-      ) => {
-        new Popup({ closeButton: false, maxWidth: '260px' })
+        offset = 0,
+      ) =>
+        new Popup({ closeButton: false, maxWidth: '260px', offset })
           .setLngLat(at)
           .setDOMContent(el)
           .addTo(m)
-      }
       m.on('click', 'routes', (e) => {
         // A click on a bus or stop over a route goes to the bus or stop.
         if (
-          m.queryRenderedFeatures(e.point, { layers: ['buses', 'stops'] })
+          m.queryRenderedFeatures(e.point, { layers: ['buses', 'stops-hit'] })
             .length
         )
           return
         const p = e.features?.[0]?.properties
         if (p) popup(e.lngLat, textCard(String(p.code), String(p.name)))
       })
-      m.on('click', 'stops', (e) => {
+      let stopPopup: InstanceType<typeof Popup> | null = null
+      m.on('click', 'stops-hit', (e) => {
         if (m.queryRenderedFeatures(e.point, { layers: ['buses'] }).length)
           return
-        const p = e.features?.[0]?.properties
-        if (p)
-          popup(
-            e.lngLat,
-            stopCard(
-              String(p.name),
-              Boolean(p.halte),
-              String(p.routes).split(',').filter(Boolean),
-              routesRef.current,
-            ),
-          )
+        const f = e.features?.[0]
+        if (f?.geometry.type !== 'Point') return
+        // Pinned to the stop itself rather than where the tap landed, with
+        // a ring on the stop until the popup closes.
+        const at = f.geometry.coordinates as [number, number]
+        const focus = m.getSource<GeoJSONSource>('stop-focus')
+        focus?.setData({
+          type: 'Feature',
+          properties: {},
+          geometry: { type: 'Point', coordinates: at },
+        })
+        const opened = popup(
+          at,
+          stopCard(
+            String(f.properties.name),
+            Boolean(f.properties.halte),
+            String(f.properties.routes).split(',').filter(Boolean),
+            routesRef.current,
+          ),
+          14,
+        )
+        stopPopup = opened
+        // The previous popup closes after this handler runs when another
+        // stop is tapped, so only the latest one clears the ring.
+        opened.on('close', () => {
+          if (stopPopup === opened) focus?.setData(toGeoJSON([]))
+        })
       })
       m.on('click', 'buses', (e) => {
         const p = e.features?.[0]?.properties
@@ -810,7 +871,7 @@ export function RouteMap({
         if (!m.queryRenderedFeatures(e.point, { layers: ['buses'] }).length)
           setSelectedBus(null)
       })
-      for (const layer of ['routes', 'stops', 'buses']) {
+      for (const layer of ['routes', 'stops-hit', 'buses']) {
         m.on(
           'mouseenter',
           layer,
@@ -1135,6 +1196,7 @@ export function RouteMap({
     if (!m || !ready) return
     const visibility = showStops ? 'visible' : 'none'
     m.setLayoutProperty('stops', 'visibility', visibility)
+    m.setLayoutProperty('stops-hit', 'visibility', visibility)
     m.setLayoutProperty('stop-label', 'visibility', visibility)
     if (!showStops) return
     const ctrl = new AbortController()
