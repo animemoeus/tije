@@ -11,6 +11,7 @@ import 'maplibre-gl/dist/maplibre-gl.css'
 // pre-bundles it; let Vite bundle the worker and hand maplibre the URL.
 import workerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url'
 import { API, DEFAULT_TYPES } from '#/api'
+import { DiscussionEmbed } from 'disqus-react'
 import { BusInfo } from './BusInfo'
 
 const WS = API.replace(/^http/, 'ws')
@@ -102,6 +103,8 @@ const TURN_MS = 150
 const PING_OPACITY = 1
 // Outer share of the glow's radius that fades out; inside it the colour is solid.
 const PING_BLUR = 0.6
+// Speech bubble for the discussion tab and button.
+const CHAT_ICON = 'M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12Z'
 
 /**
  * Paint for the ping glows at time `now` (performance.now()): each glow grows
@@ -490,9 +493,21 @@ export function RouteMap({
   const [selectedBus, setSelectedBus] = useState<string | null>(null)
   const [showStops, setShowStops] = useState(true)
   // Phone tab bar: 'map' leaves the map clear, the others open their sheet.
-  const [tab, setTab] = useState<'map' | 'filter' | 'info'>('map')
+  const [tab, setTab] = useState<'map' | 'filter' | 'info' | 'chat'>('map')
   // The sheet's last tab, still shown while the sheet slides away to the map.
-  const [sheet, setSheet] = useState<'filter' | 'info'>('filter')
+  const [sheet, setSheet] = useState<'filter' | 'info' | 'chat'>('filter')
+  // Disqus loads only once someone opens the discussion, never during SSR.
+  const [chat, setChat] = useState(false)
+  // Disqus allows one thread per page, so it mounts in one place: a floating
+  // card from md up, the bottom sheet below.
+  const [wide, setWide] = useState(false)
+  useEffect(() => {
+    const mq = window.matchMedia('(min-width: 48rem)')
+    const sync = () => setWide(mq.matches)
+    sync()
+    mq.addEventListener('change', sync)
+    return () => mq.removeEventListener('change', sync)
+  }, [])
   // The user's own location: its pin, whether a fix is on the way, and a
   // short message when it can't be shown.
   // Like Google Maps: 'searching' until the first fix, then 'follow' keeps
@@ -1139,6 +1154,19 @@ export function RouteMap({
 
   const focus =
     'outline-none focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]'
+  /** The Disqus thread; called only in the browser, since it reads window. */
+  const discussion = () => (
+    <DiscussionEmbed
+      shortname="transjakarta"
+      config={{
+        // One thread for the whole map, whatever ?type is set.
+        url: `${window.location.origin}/`,
+        identifier: 'peta-rute',
+        title: 'Rute Transjakarta',
+        language: 'id',
+      }}
+    />
+  )
   // Types whose routes are on the map; none chosen means all of them.
   const shown = types.length ? types : typeList.map((t) => t.type)
   const allShown = typeList.every((t) => shown.includes(t.type))
@@ -1424,6 +1452,12 @@ export function RouteMap({
             </>
           )}
         </div>
+
+        <section aria-label="Diskusi" className={`md:hidden ${onTab('chat')}`}>
+          <h2 className="m-0 text-base font-bold">Diskusi</h2>
+          {chat && !wide && <div className="mt-3 min-h-40">{discussion()}</div>}
+        </section>
+
         <footer className={`flex flex-col gap-2 md:mt-auto ${onTab('info')}`}>
           <p className="m-0 text-[11px] leading-snug text-[var(--ink-soft)] [&_a]:text-[var(--ink-soft)] [&_a]:underline-offset-2 [&_a:hover]:text-[var(--ink)]">
             <a
@@ -1565,6 +1599,64 @@ export function RouteMap({
         </svg>
       </button>
 
+      {/* Desktop discussion: a button left of the locate button and a card
+          floating on the right side of the map. */}
+      <button
+        type="button"
+        onClick={() => setChat((c) => !c)}
+        aria-label={chat ? 'Tutup diskusi' : 'Buka diskusi'}
+        aria-expanded={chat && wide}
+        aria-controls="diskusi"
+        className={`absolute bottom-4 right-20 z-[5] flex h-12 w-12 cursor-pointer items-center justify-center rounded-full shadow-md transition-transform duration-150 active:scale-95 max-md:hidden ${chat ? 'bg-[var(--accent)] text-[var(--accent-ink)]' : 'bg-[var(--surface)] text-[var(--ink-soft)]'} ${focus}`}
+      >
+        <svg
+          aria-hidden="true"
+          viewBox="0 0 24 24"
+          className="h-6 w-6"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth={2}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          <path d={CHAT_ICON} />
+        </svg>
+      </button>
+      {chat && wide && (
+        <div
+          id="diskusi"
+          role="dialog"
+          aria-label="Diskusi"
+          onKeyDown={(e) => e.key === 'Escape' && setChat(false)}
+          className="fade-in absolute bottom-20 right-4 top-16 z-20 flex w-[min(26rem,calc(100%-2rem))] flex-col rounded-2xl bg-[var(--surface)] shadow-xl"
+        >
+          <div className="flex shrink-0 items-center justify-between py-2 pl-5 pr-2">
+            <h2 className="m-0 text-base font-bold">Diskusi</h2>
+            <button
+              type="button"
+              onClick={() => setChat(false)}
+              aria-label="Tutup diskusi"
+              className={`flex h-11 w-11 cursor-pointer items-center justify-center rounded-full text-[var(--ink-soft)] hover:bg-[var(--field)] ${focus}`}
+            >
+              <svg
+                aria-hidden="true"
+                viewBox="0 0 24 24"
+                className="h-5 w-5"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth={2}
+                strokeLinecap="round"
+              >
+                <path d="M6 6l12 12M18 6 6 18" />
+              </svg>
+            </button>
+          </div>
+          <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-5">
+            {discussion()}
+          </div>
+        </div>
+      )}
+
       <p
         role="status"
         className="pointer-events-none absolute inset-x-3 bottom-[calc(3.5rem+env(safe-area-inset-bottom)+4.5rem)] z-20 m-0 flex justify-end md:bottom-[4.5rem] md:left-auto md:right-4 md:max-w-sm"
@@ -1589,6 +1681,7 @@ export function RouteMap({
               'M9 4 3 6v14l6-2 6 2 6-2V4l-6 2-6-2Zm0 0v14m6-12v14',
             ],
             ['filter', 'Rute', 'M4 6h16M7 12h10m-7 6h4'],
+            ['chat', 'Diskusi', CHAT_ICON],
             [
               'info',
               'Info',
@@ -1606,6 +1699,7 @@ export function RouteMap({
             onClick={() => {
               setTab(tab === id ? 'map' : id)
               if (id !== 'map') setSheet(id)
+              if (id === 'chat') setChat(true)
             }}
             className={`flex h-14 flex-1 cursor-pointer flex-col items-center justify-center gap-0.5 text-[11px] font-semibold transition-colors duration-150 ${tab === id ? 'text-[var(--accent)]' : 'text-[var(--ink-soft)]'} ${focus}`}
           >

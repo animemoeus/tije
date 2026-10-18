@@ -22,9 +22,11 @@
     "@tanstack/react-router": "1.170.44",
     "@tanstack/react-router-devtools": "1.167.2",
     "@tanstack/react-start": "1.169.1",
+    "disqus-react": "^1.1.7",
     "dotenv-cli": "^11.0.0",
     "maplibre-gl": "^6.14.0",
     "nitro": "3.0.260610-beta",
+    "prop-types": "^15.8.1",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "tailwindcss": "^4.1.18"
