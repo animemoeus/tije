@@ -1492,6 +1492,12 @@ export function RouteMap({
               OpenStreetMap
             </a>
           </p>
+          <p className="m-0 text-xs text-[var(--ink-soft)]">
+            Dibuat oleh{' '}
+            <span className="font-semibold text-[var(--ink)]">
+              Arter Tendean
+            </span>
+          </p>
         </footer>
       </aside>
 
