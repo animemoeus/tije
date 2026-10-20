@@ -20,8 +20,48 @@ export const Route = createRootRoute({
         content: 'width=device-width, initial-scale=1, viewport-fit=cover',
       },
       {
-        title: 'Rute Transjakarta',
+        title: 'Transjakarta Live – Lacak Posisi Bus Real-Time | Tije',
       },
+      {
+        name: 'description',
+        content:
+          'Lacak posisi bus Transjakarta secara langsung di peta. Lihat bus BRT, Mikrotrans dan rute lainnya bergerak real-time, lengkap dengan rute dan halte.',
+      },
+      {
+        name: 'keywords',
+        content:
+          'transjakarta live, lacak bus transjakarta, posisi bus real-time, tracking transjakarta, peta transjakarta, rute transjakarta, halte transjakarta',
+      },
+      { property: 'og:type', content: 'website' },
+      { property: 'og:site_name', content: 'Tije' },
+      { property: 'og:locale', content: 'id_ID' },
+      {
+        property: 'og:title',
+        content: 'Transjakarta Live – Lacak Posisi Bus Real-Time',
+      },
+      {
+        property: 'og:description',
+        content:
+          'Lihat bus Transjakarta bergerak langsung di peta, lengkap dengan rute dan halte.',
+      },
+      { property: 'og:url', content: 'https://tije.info/' },
+      // ponytail: square app icon, swap for a 1200x630 map screenshot and a
+      // summary_large_image card when one exists.
+      { property: 'og:image', content: 'https://tije.info/icon-512.png' },
+      { property: 'og:image:width', content: '512' },
+      { property: 'og:image:height', content: '512' },
+      { property: 'og:image:alt', content: 'Logo Info Tije' },
+      { name: 'twitter:card', content: 'summary' },
+      {
+        name: 'twitter:title',
+        content: 'Transjakarta Live – Lacak Posisi Bus Real-Time',
+      },
+      {
+        name: 'twitter:description',
+        content:
+          'Lihat bus Transjakarta bergerak langsung di peta, lengkap dengan rute dan halte.',
+      },
+      { name: 'twitter:image', content: 'https://tije.info/icon-512.png' },
       // Installable from the browser menu ("Add to Home Screen") and opened
       // without browser chrome; iOS reads its own meta tags for that.
       { name: 'theme-color', content: '#ffffff' },

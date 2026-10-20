@@ -1,7 +1,7 @@
 {
-  "name": "Rute Transjakarta",
+  "name": "Transjakarta Live",
   "short_name": "Tije",
-  "description": "Peta rute dan posisi bus Transjakarta secara langsung.",
+  "description": "Lacak posisi bus Transjakarta secara langsung di peta, lengkap dengan rute dan halte.",
   "lang": "id",
   "start_url": "/",
   "scope": "/",
