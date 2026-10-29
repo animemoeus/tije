@@ -589,62 +589,94 @@ export function RouteMap({
           },
           'water',
         )
+        // Routes and stops go under the basemap's labels so place names
+        // stay readable; the buses stay on top of everything.
+        const labels = m.getStyle().layers.find((l) => l.type === 'symbol')?.id
         m.addSource('routes', { type: 'geojson', data: data.current })
-        m.addLayer({
-          id: 'routes',
-          type: 'line',
-          source: 'routes',
-          layout: { 'line-cap': 'round', 'line-join': 'round' },
-          paint: {
-            'line-color': ['get', 'color'],
-            'line-width': 3,
-            'line-opacity': ROUTE_OPACITY,
-            // Lines cross-fade when the route filter changes.
-            'line-opacity-transition': {
-              duration: matchMedia('(prefers-reduced-motion: reduce)').matches
-                ? 0
-                : 400,
+        m.addLayer(
+          {
+            id: 'routes',
+            type: 'line',
+            source: 'routes',
+            layout: { 'line-cap': 'round', 'line-join': 'round' },
+            paint: {
+              'line-color': ['get', 'color'],
+              'line-width': 3,
+              'line-opacity': ROUTE_OPACITY,
+              // Lines cross-fade when the route filter changes.
+              'line-opacity-transition': {
+                duration: matchMedia('(prefers-reduced-motion: reduce)').matches
+                  ? 0
+                  : 400,
+              },
             },
           },
-        })
+          labels,
+        )
         // The selected bus's route from where it is to where it's going.
         m.addSource('focus', { type: 'geojson', data: toGeoJSON([]) })
-        m.addLayer({
-          id: 'route-ahead',
-          type: 'line',
-          source: 'focus',
-          layout: { 'line-cap': 'round', 'line-join': 'round' },
-          paint: { 'line-color': ['get', 'color'], 'line-width': 5 },
-        })
+        m.addLayer(
+          {
+            id: 'route-ahead',
+            type: 'line',
+            source: 'focus',
+            layout: { 'line-cap': 'round', 'line-join': 'round' },
+            paint: { 'line-color': ['get', 'color'], 'line-width': 5 },
+          },
+          labels,
+        )
         // Stops; the "Halte" chip shows or hides them.
         m.addSource('stops', { type: 'geojson', data: stopsToGeoJSON([]) })
         const halte = (
           yes: number | string,
           no: number | string,
         ): ExpressionSpecification => ['case', ['get', 'halte'], yes, no]
-        m.addLayer({
-          id: 'stops',
-          type: 'circle',
-          source: 'stops',
-          filter: ['any', ['get', 'halte'], ['>=', ['zoom'], BUS_STOP_ZOOM]],
-          layout: { visibility: 'none' },
-          paint: {
-            'circle-radius': [
-              'interpolate',
-              ['linear'],
-              ['zoom'],
-              11,
-              halte(3, 2),
-              16,
-              halte(7, 4),
-            ],
-            // Haltes are filled blue and bigger; bus stops stay small and
-            // hollow, so the two differ in size and fill, not hue alone.
-            'circle-color': halte(HALTE_COLOR, '#ffffff'),
-            'circle-stroke-color': halte('#ffffff', '#6b7280'),
-            'circle-stroke-width': halte(2, 1.25),
+        m.addLayer(
+          {
+            id: 'stops',
+            type: 'circle',
+            source: 'stops',
+            filter: ['any', ['get', 'halte'], ['>=', ['zoom'], BUS_STOP_ZOOM]],
+            layout: { visibility: 'none' },
+            paint: {
+              'circle-radius': [
+                'interpolate',
+                ['linear'],
+                ['zoom'],
+                11,
+                halte(2.5, 2),
+                16,
+                halte(7, 4),
+              ],
+              // Zoomed out, haltes are hollow so the live buses are the only
+              // coloured dots. From HALTE_LABEL_ZOOM they turn filled blue and
+              // bigger; bus stops stay small and hollow, so the two differ in
+              // size and fill, not hue alone.
+              'circle-color': [
+                'step',
+                ['zoom'],
+                '#ffffff',
+                HALTE_LABEL_ZOOM,
+                halte(HALTE_COLOR, '#ffffff'),
+              ],
+              'circle-stroke-color': [
+                'step',
+                ['zoom'],
+                halte('#5f6368', '#6b7280'),
+                HALTE_LABEL_ZOOM,
+                halte('#ffffff', '#6b7280'),
+              ],
+              'circle-stroke-width': [
+                'step',
+                ['zoom'],
+                1.25,
+                HALTE_LABEL_ZOOM,
+                halte(2, 1.25),
+              ],
+            },
           },
-        })
+          labels,
+        )
         // The dots are only a few pixels wide; this invisible ring around
         // each one takes the clicks, so a fingertip can hit it.
         m.addLayer({
@@ -740,7 +772,7 @@ export function RouteMap({
               'interpolate',
               ['linear'],
               ['zoom'],
-              10,
+              11,
               2.5,
               LABEL_ZOOM[0],
               5,
@@ -1384,44 +1416,90 @@ export function RouteMap({
     }
   }
 
-  const chip = `flex min-h-11 cursor-pointer select-none items-center px-3 text-sm font-semibold transition-colors duration-150 bg-[var(--field)] text-[var(--ink)] hover:bg-[var(--ground)] has-[:checked]:bg-[var(--accent)] has-[:checked]:text-[var(--accent-ink)] has-[:disabled]:cursor-default has-[:focus-visible]:outline-3 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-[var(--accent)]`
+  // Filter chips, Google Maps style: outlined when off, tinted with a tick
+  // when on. The native checkbox inside keeps keyboards and screen readers.
+  const chip = `inline-flex h-11 cursor-pointer select-none items-center gap-1.5 rounded-full border border-[var(--line)] bg-[var(--surface)] px-4 text-sm font-semibold text-[var(--ink)] transition-colors duration-150 hover:bg-[var(--field)] has-[:checked]:border-transparent has-[:checked]:bg-[var(--accent-soft)] has-[:checked]:text-[var(--accent-on-soft)] has-[:disabled]:cursor-default md:h-9 md:px-3 has-[:focus-visible]:outline-3 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-[var(--accent)]`
+  const tick = (
+    <svg
+      aria-hidden="true"
+      viewBox="0 0 24 24"
+      className="-ml-1 hidden h-4 w-4 peer-checked:block"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2.5}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="m5 12 5 5 9-10" />
+    </svg>
+  )
+  const busCount = shownBuses.length.toLocaleString('id-ID')
+  // The live feed's state, at the end of the floating top bar.
+  const liveState = (
+    <p
+      aria-live="polite"
+      className="m-0 flex shrink-0 items-center gap-2 text-sm font-semibold"
+    >
+      <span
+        aria-hidden="true"
+        className={`h-2 w-2 shrink-0 rounded-full ${
+          feed === 'open'
+            ? 'bg-[#1e8e3e]'
+            : feed === 'closed'
+              ? 'bg-[#d93025]'
+              : 'animate-pulse bg-[#f29900] motion-reduce:animate-none'
+        }`}
+      />
+      <span className="sr-only">Data bus: </span>
+      {feed === 'open'
+        ? 'Terhubung'
+        : feed === 'closed'
+          ? 'Menyambung ulang…'
+          : 'Menyambungkan…'}
+    </p>
+  )
+  const retry = (
+    <button
+      type="button"
+      onClick={() => setAttempt((a) => a + 1)}
+      className={`h-10 shrink-0 cursor-pointer rounded-full bg-[var(--accent)] px-4 text-sm font-semibold text-[var(--accent-ink)] transition-[filter,scale] duration-150 hover:brightness-110 active:scale-95 ${focus}`}
+    >
+      Coba lagi
+    </button>
+  )
 
   return (
     <div className="relative h-full md:flex">
       {/* On phones the panel is a bottom sheet over a full-screen map that
           opens from the tab bar, one section per tab. */}
       <aside
-        className={`rise-in stagger absolute inset-x-0 bottom-[calc(3.5rem+env(safe-area-inset-bottom))] z-10 flex max-h-[70dvh] flex-col gap-4 overflow-y-auto rounded-t-2xl bg-[var(--surface)] px-4 pb-5 pt-2 shadow-[0_-8px_24px_rgb(0_0_0/0.12)] md:static md:max-h-none md:w-80 md:shrink-0 md:gap-8 md:rounded-none md:p-6 md:shadow-none max-md:transition-[translate,visibility] motion-reduce:transition-none ${
+        className={`absolute inset-x-0 bottom-[calc(4rem+env(safe-area-inset-bottom))] z-10 flex max-h-[70dvh] flex-col gap-6 overflow-y-auto rounded-t-[28px] bg-[var(--surface)] px-5 pb-6 pt-6 shadow-[0_-2px_12px_rgb(60_64_67/0.18)] md:static md:max-h-none md:w-96 md:shrink-0 md:gap-7 md:rounded-none md:border-r md:border-[var(--line)] md:p-6 md:shadow-none max-md:transition-[translate,visibility] motion-reduce:transition-none ${
           // Slides down behind the tab bar, then hides so it can't take focus.
           tab === 'map'
             ? 'max-md:invisible max-md:translate-y-full max-md:duration-200 max-md:ease-in'
             : 'max-md:duration-300 max-md:ease-[cubic-bezier(0.16,1,0.3,1)]'
         }`}
       >
-        <div
-          aria-hidden="true"
-          className="mx-auto h-1 w-10 shrink-0 rounded-full bg-[var(--field)] md:hidden"
-        />
-        <h1 className="m-0 text-4xl font-extrabold leading-none tracking-tight max-md:hidden">
-          Rute Transjakarta
-        </h1>
+        <header className="max-md:hidden">
+          <h1 className="m-0 text-xl font-bold leading-tight">Tije</h1>
+          <p className="m-0 text-sm text-[var(--ink-soft)]">
+            Bus Transjakarta, langsung di peta
+          </p>
+        </header>
 
         <fieldset className={`m-0 border-0 p-0 ${onTab('filter')}`}>
-          <legend className="mb-3 text-base font-bold md:mb-2 md:text-sm md:font-medium md:text-[var(--ink-soft)]">
-            Filter rute
-          </legend>
-          {/* Native checkboxes inside chips: they wrap to fit the small
-              phone panel, and keyboard and screen readers work as usual. */}
+          <legend className="mb-3 text-base font-bold">Jenis rute</legend>
           <div className="flex flex-wrap gap-2">
             <label className={chip}>
               <input
                 type="checkbox"
-                className="sr-only"
+                className="peer sr-only"
                 checked={allShown}
                 // Unticking "all" goes back to the default selection.
                 onChange={() => onTypesChange(allShown ? DEFAULT_TYPES : [])}
               />
-              Semua rute
+              {tick}
+              Semua
             </label>
             {typeList.map((t) => {
               const on = shown.includes(t.type)
@@ -1429,14 +1507,15 @@ export function RouteMap({
                 <label key={t.type} className={chip}>
                   <input
                     type="checkbox"
-                    className="sr-only"
+                    className="peer sr-only"
                     checked={on}
                     // The last ticked type stays; an empty choice would mean all.
                     disabled={on && shown.length === 1}
                     onChange={() => toggleType(t.type)}
                   />
+                  {tick}
                   {t.type}
-                  <span className="ml-1.5 font-normal tabular-nums opacity-75">
+                  <span className="font-medium tabular-nums opacity-70">
                     {t.routes}
                   </span>
                 </label>
@@ -1446,82 +1525,69 @@ export function RouteMap({
         </fieldset>
 
         <fieldset className={`m-0 border-0 p-0 ${onTab('filter')}`}>
-          <legend className="mb-3 text-base font-bold md:mb-2 md:text-sm md:font-medium md:text-[var(--ink-soft)]">
-            Lapisan
-          </legend>
-          <label className={`${chip} w-fit`}>
+          <legend className="mb-3 text-base font-bold">Lapisan peta</legend>
+          <label className={chip}>
             <input
               type="checkbox"
-              className="sr-only"
+              className="peer sr-only"
               checked={showStops}
               onChange={() => setShowStops((v) => !v)}
             />
+            {tick}
             Halte
           </label>
         </fieldset>
 
-        <div aria-live="polite" className={onTab('info')}>
+        <section aria-label="Ringkasan" className={onTab('info')}>
           {status === 'error' ? (
-            <div
-              role="alert"
-              className="fade-in flex flex-col items-start gap-3"
-            >
+            <div className="fade-in flex flex-col items-start gap-3">
               <p className="m-0">
-                Gagal memuat rute. Pastikan tije-api berjalan di{' '}
-                <code>{API}</code>.
+                Gagal memuat rute dari <code>{API}</code>. Periksa koneksi, lalu
+                coba lagi.
               </p>
-              <button
-                type="button"
-                onClick={() => setAttempt((a) => a + 1)}
-                className={`h-12 cursor-pointer bg-[var(--accent)] px-5 font-bold text-[var(--accent-ink)] transition-transform duration-150 hover:brightness-110 active:scale-95 ${focus}`}
-              >
-                Coba lagi
-              </button>
+              {retry}
+            </div>
+          ) : status === 'loading' ? (
+            <div aria-label="Memuat rute…" className="flex flex-col gap-2.5">
+              <span className="h-6 w-48 animate-pulse rounded-md bg-[var(--field)] motion-reduce:animate-none" />
+              <span className="h-4 w-full animate-pulse rounded-md bg-[var(--field)] motion-reduce:animate-none" />
             </div>
           ) : (
-            <>
-              <p className="m-0 flex items-center gap-3">
-                {status === 'loading' ? (
-                  <>
-                    <span
-                      aria-hidden="true"
-                      className="h-5 w-5 animate-spin rounded-full border-2 border-[var(--field)] border-t-[var(--accent)] motion-reduce:animate-none"
-                    />
-                    <span className="font-semibold">Memuat rute…</span>
-                  </>
-                ) : (
-                  <span
-                    key={count}
-                    className="fade-in flex items-baseline gap-2"
-                  >
-                    <span className="text-5xl font-extrabold leading-none tracking-tighter tabular-nums md:text-7xl">
-                      {count}
-                    </span>
-                    <span className="font-semibold">rute di peta</span>
-                  </span>
-                )}
-              </p>
-              <p className="mb-0 mt-3 text-sm text-[var(--ink-soft)]">
-                {status === 'done' && count === 0
-                  ? 'Tidak ada rute untuk jenis ini. Pilih jenis lain.'
-                  : 'Klik garis atau bus di peta untuk melihat detailnya.'}
-              </p>
-              <p className="mb-0 mt-5 text-base font-semibold">
+            <div className="fade-in">
+              <p className="m-0 text-lg font-bold tabular-nums">
                 {feed === 'open'
-                  ? `${shownBuses.length} bus aktif di rute ini`
-                  : 'Menunggu data bus…'}
+                  ? `${busCount} bus aktif di ${count} rute`
+                  : `${count} rute di peta`}
               </p>
-            </>
+              <p className="mb-0 mt-1 text-sm text-[var(--ink-soft)]">
+                {count === 0
+                  ? 'Tidak ada rute untuk jenis ini. Pilih jenis lain.'
+                  : 'Pilih bus, garis rute, atau halte di peta untuk melihat detailnya.'}
+              </p>
+            </div>
           )}
-        </div>
+        </section>
 
         <section aria-label="Diskusi" className={`md:hidden ${onTab('chat')}`}>
           <h2 className="m-0 text-base font-bold">Diskusi</h2>
           {chat && !wide && <div className="mt-3 min-h-40">{discussion()}</div>}
         </section>
 
-        <footer className={`flex flex-col gap-2 md:mt-auto ${onTab('info')}`}>
-          <p className="m-0 text-[11px] leading-snug text-[var(--ink-soft)] [&_a]:text-[var(--ink-soft)] [&_a]:underline-offset-2 [&_a:hover]:text-[var(--ink)]">
+        <footer
+          className={`flex flex-col gap-3 border-t border-[var(--line)] pt-5 md:mt-auto ${onTab('info')}`}
+        >
+          <p className="m-0 text-sm leading-snug text-[var(--ink-soft)]">
+            Dibuat oleh{' '}
+            <span className="font-semibold text-[var(--ink)]">
+              Arter Tendean
+            </span>
+            . Bukan aplikasi resmi Transjakarta, dan tanpa dana APBN. Saran atau
+            laporan:{' '}
+            <a href="mailto:arter@tije.info" className="font-semibold">
+              arter@tije.info
+            </a>
+          </p>
+          <p className="m-0 text-xs leading-relaxed text-[var(--ink-soft)] [&_a]:text-[var(--ink-soft)] [&_a:hover]:text-[var(--ink)]">
             <a
               target="_blank"
               rel="noopener noreferrer"
@@ -1554,12 +1620,6 @@ export function RouteMap({
               OpenStreetMap
             </a>
           </p>
-          <p className="m-0 text-xs text-[var(--ink-soft)]">
-            Dibuat oleh{' '}
-            <span className="font-semibold text-[var(--ink)]">
-              Arter Tendean
-            </span>
-          </p>
         </footer>
       </aside>
 
@@ -1581,59 +1641,68 @@ export function RouteMap({
         )}
       </div>
 
-      {/* Phone status pill under the notch; the full status is in the Info tab. */}
-      <div
-        aria-hidden={status !== 'error'}
-        className="fade-in absolute left-3 top-[calc(env(safe-area-inset-top)+0.75rem)] z-10 flex min-h-10 items-center gap-2 rounded-full bg-[var(--surface)] py-1 pl-4 pr-1.5 text-sm font-semibold shadow-md md:hidden"
-      >
+      {/* Floating top bar: what's on the map and the feed state. Across the
+          top under the notch on phones, top right of the map from md up. */}
+      <div className="fade-in absolute inset-x-3 top-[calc(env(safe-area-inset-top)+0.75rem)] z-10 flex min-h-12 items-center gap-3 rounded-full bg-[var(--surface)] py-1.5 pl-5 pr-4 shadow-[var(--shadow)] md:inset-x-auto md:right-6 md:top-6">
         {status === 'error' ? (
           <>
-            <span>Gagal memuat rute</span>
-            <button
-              type="button"
-              onClick={() => setAttempt((a) => a + 1)}
-              className={`h-8 cursor-pointer rounded-full bg-[var(--accent)] px-3 font-bold text-[var(--accent-ink)] active:scale-95 ${focus}`}
-            >
-              Coba lagi
-            </button>
-          </>
-        ) : status === 'loading' ? (
-          <>
-            <span className="h-4 w-4 animate-spin rounded-full border-2 border-[var(--field)] border-t-[var(--accent)] motion-reduce:animate-none" />
-            <span className="pr-2.5">Memuat rute…</span>
+            <span role="alert" className="min-w-0 flex-1 text-sm font-semibold">
+              Gagal memuat rute
+            </span>
+            <span className="-mr-2.5">{retry}</span>
           </>
         ) : (
-          <span className="pr-2.5 tabular-nums">
-            {feed === 'open' && `${shownBuses.length} bus · `}
-            <span className="text-[var(--ink-soft)]">{count} rute</span>
-          </span>
+          <>
+            <p
+              aria-hidden="true"
+              className="m-0 min-w-0 flex-1 truncate text-[15px] font-semibold tabular-nums"
+            >
+              {status === 'loading' ? (
+                <span className="text-[var(--ink-soft)]">Memuat rute…</span>
+              ) : (
+                <>
+                  {feed === 'open' && `${busCount} bus · `}
+                  <span className="text-[var(--ink-soft)]">{count} rute</span>
+                </>
+              )}
+            </p>
+            {liveState}
+          </>
         )}
       </div>
 
-      {/* Live feed status, top right on every screen size. */}
-      <p
-        aria-live="polite"
-        className="fade-in absolute right-3 top-[calc(env(safe-area-inset-top)+0.75rem)] z-10 m-0 flex min-h-10 items-center gap-2 rounded-full bg-[var(--surface)] px-4 text-sm font-semibold shadow-md"
-      >
-        <span
-          aria-hidden="true"
-          className={`h-2 w-2 shrink-0 rounded-full ${
-            feed === 'open'
-              ? 'bg-emerald-500'
-              : feed === 'closed'
-                ? 'bg-red-500'
-                : 'animate-pulse bg-amber-500 motion-reduce:animate-none'
-          }`}
-        />
-        <span className="sr-only">Data bus: </span>
-        <span>
-          {feed === 'open'
-            ? 'Terhubung'
-            : feed === 'closed'
-              ? 'Menyambung ulang…'
-              : 'Menyambungkan…'}
-        </span>
-      </p>
+      {/* Desktop zoom, Google Maps style: one rounded column of + and −.
+          Phones pinch instead. */}
+      <div className="absolute bottom-[5.25rem] right-6 z-[5] flex flex-col overflow-hidden rounded-full bg-[var(--surface)] shadow-[var(--shadow)] max-md:hidden">
+        {(
+          [
+            ['Perbesar', 'M12 5v14M5 12h14', 1],
+            ['Perkecil', 'M5 12h14', -1],
+          ] as const
+        ).map(([label, icon, step]) => (
+          <button
+            key={label}
+            type="button"
+            aria-label={label}
+            onClick={() =>
+              step > 0 ? map.current?.zoomIn() : map.current?.zoomOut()
+            }
+            className={`flex h-12 w-12 cursor-pointer items-center justify-center text-[var(--ink-soft)] transition-colors duration-150 hover:bg-[var(--field)] hover:text-[var(--ink)] ${focus} focus-visible:-outline-offset-3`}
+          >
+            <svg
+              aria-hidden="true"
+              viewBox="0 0 24 24"
+              className="h-6 w-6"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={2}
+              strokeLinecap="round"
+            >
+              <path d={icon} />
+            </svg>
+          </button>
+        ))}
+      </div>
 
       {/* Locate button, bottom right; on phones it sits above the tab bar and
           slips under an open sheet or bus card. */}
@@ -1644,7 +1713,7 @@ export function RouteMap({
           loc === 'free' ? 'Kembali ke lokasi saya' : 'Tampilkan lokasi saya'
         }
         aria-pressed={loc === 'follow'}
-        className={`absolute bottom-[calc(3.5rem+env(safe-area-inset-bottom)+1rem)] right-3 z-[5] flex h-12 w-12 cursor-pointer items-center justify-center rounded-full bg-[var(--surface)] shadow-md transition-transform duration-150 active:scale-95 md:bottom-4 md:right-4 ${loc === 'off' ? 'text-[var(--ink-soft)]' : 'text-[var(--accent)]'} ${focus}`}
+        className={`absolute bottom-[calc(4rem+env(safe-area-inset-bottom)+1rem)] right-3 z-[5] flex h-12 w-12 cursor-pointer items-center justify-center rounded-full bg-[var(--surface)] shadow-[var(--shadow)] transition-[scale,background-color] duration-150 hover:bg-[var(--field)] active:scale-95 md:bottom-6 md:right-6 ${loc === 'off' ? 'text-[var(--ink-soft)]' : 'text-[var(--accent)]'} ${focus}`}
       >
         <svg
           aria-hidden="true"
@@ -1675,7 +1744,7 @@ export function RouteMap({
         aria-label={chat ? 'Tutup diskusi' : 'Buka diskusi'}
         aria-expanded={chat && wide}
         aria-controls="diskusi"
-        className={`absolute bottom-4 right-20 z-[5] flex h-12 w-12 cursor-pointer items-center justify-center rounded-full shadow-md transition-transform duration-150 active:scale-95 max-md:hidden ${chat ? 'bg-[var(--accent)] text-[var(--accent-ink)]' : 'bg-[var(--surface)] text-[var(--ink-soft)]'} ${focus}`}
+        className={`absolute bottom-6 right-[5.25rem] z-[5] flex h-12 w-12 cursor-pointer items-center justify-center rounded-full shadow-[var(--shadow)] transition-[scale,background-color] duration-150 active:scale-95 max-md:hidden ${chat ? 'bg-[var(--accent-soft)] text-[var(--accent-on-soft)]' : 'bg-[var(--surface)] text-[var(--ink-soft)] hover:bg-[var(--field)]'} ${focus}`}
       >
         <svg
           aria-hidden="true"
@@ -1696,9 +1765,9 @@ export function RouteMap({
           role="dialog"
           aria-label="Diskusi"
           onKeyDown={(e) => e.key === 'Escape' && setChat(false)}
-          className="fade-in absolute bottom-20 right-4 top-16 z-20 flex w-[min(26rem,calc(100%-2rem))] flex-col rounded-2xl bg-[var(--surface)] shadow-xl"
+          className="fade-in absolute bottom-[5.5rem] right-6 top-[5.25rem] z-20 flex w-[min(26rem,calc(100%-3rem))] flex-col rounded-2xl bg-[var(--surface)] shadow-[var(--shadow)]"
         >
-          <div className="flex shrink-0 items-center justify-between py-2 pl-5 pr-2">
+          <div className="flex shrink-0 items-center justify-between border-b border-[var(--line)] py-2 pl-5 pr-2">
             <h2 className="m-0 text-base font-bold">Diskusi</h2>
             <button
               type="button"
@@ -1719,27 +1788,27 @@ export function RouteMap({
               </svg>
             </button>
           </div>
-          <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-5">
+          <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-5 pt-3">
             {discussion()}
           </div>
         </div>
       )}
 
+      {/* Snackbar, centred above the locate button. */}
       <p
         role="status"
-        className="pointer-events-none absolute inset-x-3 bottom-[calc(3.5rem+env(safe-area-inset-bottom)+4.5rem)] z-20 m-0 flex justify-end md:bottom-[4.5rem] md:left-auto md:right-4 md:max-w-sm"
+        className="pointer-events-none absolute inset-x-3 bottom-[calc(4rem+env(safe-area-inset-bottom)+4.5rem)] z-20 m-0 flex justify-center md:bottom-24 md:left-auto md:right-6 md:max-w-sm md:justify-end"
       >
         {notice && (
-          <span className="fade-in rounded-2xl bg-[var(--ink)] px-4 py-3 text-sm font-semibold text-[var(--surface)] shadow-lg">
+          <span className="fade-in rounded-lg bg-[#303134] px-4 py-3 text-sm font-medium text-white shadow-[var(--shadow)]">
             {notice}
           </span>
         )}
       </p>
 
       <nav
-        role="tablist"
         aria-label="Menu"
-        className="absolute inset-x-0 bottom-0 z-30 flex select-none border-t border-[var(--field)] bg-[var(--surface)] pb-[env(safe-area-inset-bottom)] md:hidden"
+        className="absolute inset-x-0 bottom-0 z-30 flex select-none border-t border-[var(--line)] bg-[var(--surface)] pb-[env(safe-area-inset-bottom)] md:hidden"
       >
         {(
           [
@@ -1760,8 +1829,7 @@ export function RouteMap({
           <button
             key={id}
             type="button"
-            role="tab"
-            aria-selected={tab === id}
+            aria-pressed={tab === id}
             // Tapping the open tab again closes its sheet. BusInfo closes
             // itself on any tap outside it, so tabs never sit under a card.
             onClick={() => {
@@ -1769,20 +1837,26 @@ export function RouteMap({
               if (id !== 'map') setSheet(id)
               if (id === 'chat') setChat(true)
             }}
-            className={`flex h-14 flex-1 cursor-pointer flex-col items-center justify-center gap-0.5 text-[11px] font-semibold transition-colors duration-150 ${tab === id ? 'text-[var(--accent)]' : 'text-[var(--ink-soft)]'} ${focus}`}
+            className={`group flex h-16 flex-1 cursor-pointer flex-col items-center justify-center gap-1 text-xs font-semibold transition-colors duration-150 ${tab === id ? 'text-[var(--ink)]' : 'text-[var(--ink-soft)]'} outline-none`}
           >
-            <svg
-              aria-hidden="true"
-              viewBox="0 0 24 24"
-              className="h-6 w-6"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth={tab === id ? 2.25 : 1.75}
-              strokeLinecap="round"
-              strokeLinejoin="round"
+            {/* Material-style pill behind the active tab's icon; it also
+                carries the focus ring. */}
+            <span
+              className={`flex h-8 w-14 items-center justify-center rounded-full transition-colors duration-200 group-focus-visible:outline-3 group-focus-visible:outline-[var(--accent)] ${tab === id ? 'bg-[var(--accent-soft)] text-[var(--accent-on-soft)]' : ''}`}
             >
-              <path d={icon} />
-            </svg>
+              <svg
+                aria-hidden="true"
+                viewBox="0 0 24 24"
+                className="h-6 w-6"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth={tab === id ? 2.25 : 1.75}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d={icon} />
+              </svg>
+            </span>
             {label}
           </button>
         ))}

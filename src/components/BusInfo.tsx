@@ -102,10 +102,8 @@ export function BusInfo({
 
   const focus =
     'outline-none focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]'
-  const stops =
-    bus && (bus.prev_stop_name || bus.next_stop_name)
-      ? `${bus.prev_stop_name ?? '—'} → ${bus.next_stop_name ?? '—'}`
-      : null
+  const color = `#${bus?.route_color || '5f6368'}`
+  const hasStops = !!bus && !!(bus.prev_stop_name || bus.next_stop_name)
 
   return (
     <section
@@ -113,31 +111,28 @@ export function BusInfo({
       role="dialog"
       aria-labelledby={titleId}
       // On phones a bottom sheet resting on the tab bar; on desktop a card top left.
-      className="rise-in sheet-up absolute inset-x-0 bottom-[calc(3.5rem+env(safe-area-inset-bottom))] z-20 max-h-[60dvh] overflow-y-auto rounded-t-2xl bg-[var(--surface)] px-4 pb-5 pt-2 text-[var(--ink)] shadow-[0_-8px_24px_rgb(0_0_0/0.12)] md:inset-x-auto md:bottom-auto md:left-4 md:top-4 md:w-80 md:rounded-none md:p-4 md:shadow-lg"
+      className="sheet-up absolute inset-x-0 bottom-[calc(4rem+env(safe-area-inset-bottom))] z-20 max-h-[60dvh] overflow-y-auto rounded-t-[28px] bg-[var(--surface)] px-5 pb-5 pt-5 text-[var(--ink)] shadow-[0_-2px_12px_rgb(60_64_67/0.18)] md:inset-x-auto md:bottom-auto md:left-6 md:top-6 md:w-96 md:rounded-2xl md:p-5 md:shadow-[var(--shadow)] md:[animation:rise-in_300ms_cubic-bezier(0.16,1,0.3,1)_both] motion-reduce:animate-none"
     >
-      <div
-        aria-hidden="true"
-        className="mx-auto mb-3 h-1 w-10 rounded-full bg-[var(--field)] md:hidden"
-      />
       <div className="flex items-start gap-3">
         {bus?.route_code && (
           <span
-            className="shrink-0 rounded-full px-2.5 py-1 text-sm font-extrabold leading-none"
+            className="flex h-9 min-w-10 shrink-0 items-center justify-center rounded-lg px-2.5 text-base font-bold tabular-nums"
             style={{
-              background: `#${bus.route_color || '555555'}`,
+              background: color,
               color: `#${bus.route_text_color || 'ffffff'}`,
             }}
           >
             {bus.route_code}
           </span>
         )}
-        <div className="min-w-0 flex-1">
-          <h2 id={titleId} className="m-0 text-lg font-extrabold leading-tight">
+        <div className="min-w-0 flex-1 pt-0.5">
+          <h2 id={titleId} className="m-0 text-lg font-bold leading-snug">
             {bus?.route_name || `Bus ${busNo}`}
           </h2>
-          {/* Many routes are named after their destination; skip the repeat. */}
-          {bus?.trip_headsign && bus.trip_headsign !== bus.route_name && (
-            <p className="m-0 mt-1 text-sm text-[var(--ink-soft)]">
+          {/* Shown even when it repeats the route name, so "Pluit" alone
+              never leaves the direction unclear. */}
+          {bus?.trip_headsign && (
+            <p className="m-0 mt-0.5 text-sm text-[var(--ink-soft)]">
               Menuju {bus.trip_headsign}
             </p>
           )}
@@ -146,24 +141,36 @@ export function BusInfo({
           type="button"
           onClick={onClose}
           aria-label="Tutup informasi bus"
-          className={`-m-2 flex h-11 w-11 shrink-0 cursor-pointer items-center justify-center text-2xl leading-none text-[var(--ink-soft)] transition-colors duration-150 hover:text-[var(--ink)] ${focus}`}
+          className={`-mr-1.5 -mt-1 flex h-11 w-11 shrink-0 cursor-pointer items-center justify-center rounded-full text-[var(--ink-soft)] transition-colors duration-150 hover:bg-[var(--field)] hover:text-[var(--ink)] ${focus}`}
         >
-          ×
+          <svg
+            aria-hidden="true"
+            viewBox="0 0 24 24"
+            className="h-5 w-5"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={2}
+            strokeLinecap="round"
+          >
+            <path d="M6 6l12 12M18 6 6 18" />
+          </svg>
         </button>
       </div>
 
       <div aria-live="polite" className="mt-4">
         {status === 'loading' && (
-          <p className="m-0 flex items-center gap-3">
-            <span
-              aria-hidden="true"
-              className="h-5 w-5 animate-spin rounded-full border-2 border-[var(--field)] border-t-[var(--accent)] motion-reduce:animate-none"
-            />
-            <span className="font-semibold">Memuat informasi bus…</span>
-          </p>
+          <div
+            aria-label="Memuat informasi bus…"
+            className="flex flex-col gap-3"
+          >
+            <span className="h-5 w-3/4 animate-pulse rounded-md bg-[var(--field)] motion-reduce:animate-none" />
+            <span className="h-5 w-1/2 animate-pulse rounded-md bg-[var(--field)] motion-reduce:animate-none" />
+          </div>
         )}
         {status === 'gone' && (
-          <p className="fade-in m-0">Bus ini sudah tidak terlacak.</p>
+          <p className="fade-in m-0">
+            Bus ini sudah tidak terlacak. Mungkin sudah selesai beroperasi.
+          </p>
         )}
         {status === 'error' && (
           <div role="alert" className="fade-in flex flex-col items-start gap-3">
@@ -171,41 +178,105 @@ export function BusInfo({
             <button
               type="button"
               onClick={() => setAttempt((a) => a + 1)}
-              className={`h-11 cursor-pointer bg-[var(--accent)] px-5 font-bold text-[var(--accent-ink)] transition-transform duration-150 hover:brightness-110 active:scale-95 ${focus}`}
+              className={`h-10 cursor-pointer rounded-full bg-[var(--accent)] px-4 text-sm font-semibold text-[var(--accent-ink)] transition-[filter,scale] duration-150 hover:brightness-110 active:scale-95 ${focus}`}
             >
               Coba lagi
             </button>
           </div>
         )}
         {status === 'done' && bus && (
-          <dl className="fade-in m-0 grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
-            <dt className="text-[var(--ink-soft)]">Nomor bus</dt>
-            <dd className="m-0 font-semibold">{bus.bus_body_no}</dd>
-            {bus.type && (
-              <>
-                <dt className="text-[var(--ink-soft)]">Layanan</dt>
-                <dd className="m-0 font-semibold">{bus.type}</dd>
-              </>
+          <div className="fade-in">
+            {/* Where the bus is between two haltes, drawn as a strip of
+                the route in its own colour, like Citymapper's line view. */}
+            {hasStops && (
+              <ol aria-label="Posisi bus" className="m-0 list-none p-0">
+                <li className="relative flex min-h-9 items-start gap-3 pb-2">
+                  <span
+                    aria-hidden="true"
+                    className="absolute bottom-0 left-[9px] top-3 w-1 opacity-40"
+                    style={{ background: color }}
+                  />
+                  {/* Each marker sits in a 22px column centred on the rail. */}
+                  <span
+                    aria-hidden="true"
+                    className="relative flex w-[22px] shrink-0 justify-center pt-1"
+                  >
+                    <span className="h-3 w-3 rounded-full border-2 border-[var(--line)] bg-[var(--surface)]" />
+                  </span>
+                  <span className="text-sm text-[var(--ink-soft)]">
+                    <span className="sr-only">Halte sebelumnya: </span>
+                    {bus.prev_stop_name ?? 'Halte sebelumnya tidak diketahui'}
+                  </span>
+                </li>
+                <li className="relative flex min-h-11 items-center gap-3 pb-2">
+                  <span
+                    aria-hidden="true"
+                    className="absolute bottom-0 left-[9px] top-0 w-1"
+                    style={{ background: color }}
+                  />
+                  <span
+                    aria-hidden="true"
+                    className="relative h-[22px] w-[22px] shrink-0 rounded-full border-[3px] border-white shadow-[0_1px_3px_rgb(60_64_67/0.4)]"
+                    style={{ background: color }}
+                  />
+                  <span className="text-sm font-semibold">
+                    Bus di sini
+                    {!!bus.estimated_distance_next_stops && (
+                      <span className="font-normal text-[var(--ink-soft)]">
+                        {' '}
+                        ·{' '}
+                        <span className="tabular-nums">
+                          {formatDistance(bus.estimated_distance_next_stops)}
+                        </span>{' '}
+                        ke halte berikutnya
+                      </span>
+                    )}
+                  </span>
+                </li>
+                <li className="relative flex items-start gap-3">
+                  <span
+                    aria-hidden="true"
+                    className="absolute left-[9px] top-0 h-2 w-1"
+                    style={{ background: color }}
+                  />
+                  <span
+                    aria-hidden="true"
+                    className="relative flex w-[22px] shrink-0 justify-center pt-1"
+                  >
+                    <span
+                      className="h-4 w-4 rounded-full border-[3px] bg-[var(--surface)]"
+                      style={{ borderColor: color }}
+                    />
+                  </span>
+                  <span>
+                    <span className="block text-xs font-semibold text-[var(--ink-soft)]">
+                      Halte berikutnya
+                    </span>
+                    <span className="block text-base font-bold leading-snug">
+                      {bus.next_stop_name ?? 'Tidak diketahui'}
+                    </span>
+                  </span>
+                </li>
+              </ol>
             )}
-            {stops && (
-              <>
-                <dt className="text-[var(--ink-soft)]">Halte</dt>
-                <dd className="m-0 font-semibold">{stops}</dd>
-              </>
-            )}
-            {!!bus.estimated_distance_next_stops && (
-              <>
-                <dt className="text-[var(--ink-soft)]">Ke halte berikutnya</dt>
-                <dd className="m-0 font-semibold tabular-nums">
-                  {formatDistance(bus.estimated_distance_next_stops)}
-                </dd>
-              </>
-            )}
-            <dt className="text-[var(--ink-soft)]">Diperbarui</dt>
-            <dd className="m-0 font-semibold">
-              {formatAge(Math.max(0, now - seenAt) / 1000)}
-            </dd>
-          </dl>
+            <p
+              className={`m-0 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-[var(--ink-soft)] ${hasStops ? 'mt-4 border-t border-[var(--line)] pt-3' : ''}`}
+            >
+              <span>
+                <span className="font-semibold text-[var(--ink)]">
+                  Bus {bus.bus_body_no}
+                </span>
+                {bus.type && ` · ${bus.type}`}
+              </span>
+              <span className="ml-auto flex items-center gap-1.5">
+                <span
+                  aria-hidden="true"
+                  className="h-2 w-2 rounded-full bg-[#1e8e3e]"
+                />
+                Diperbarui {formatAge(Math.max(0, now - seenAt) / 1000)}
+              </span>
+            </p>
+          </div>
         )}
       </div>
     </section>

@@ -52,7 +52,9 @@ The build output goes to `.output/`. The README's "Deploy with Nitro" section me
 
 ## Styling
 
-Tailwind v4 is configured in CSS (`src/styles.css`); there is no `tailwind.config`. Colors are CSS variables (`--ground`, `--surface`, `--field`, `--ink`, `--ink-soft`, `--accent`, `--accent-ink`) defined for light mode, for `[data-theme='dark']`, and for `prefers-color-scheme: dark` when no explicit light theme is set. Use them as `bg-[var(--accent)]` and similar. If you add a token, define it in all three blocks. The font is Plus Jakarta Sans.
+Tailwind v4 is configured in CSS (`src/styles.css`); there is no `tailwind.config`. Colors are CSS variables on `:root` (`--ground`, `--surface`, `--field`, `--line`, `--ink`, `--ink-soft`, `--accent`, `--accent-ink`, `--accent-soft`, `--accent-on-soft`) plus `--shadow` for floating controls. Use them as `bg-[var(--accent)]` and similar. The app is light only, because the positron basemap has no dark style. Base element rules live in `@layer base`; an unlayered rule would beat every Tailwind utility. The font is Plus Jakarta Sans.
+
+The UI follows the category standard (Google Maps and Citymapper are the bar): fully rounded chips and buttons, 28px sheet corners, pale blue for selected states. `PRODUCT.md` and `.impeccable/surfaces/` hold the product record and the design brief.
 
 ## Conventions
 
