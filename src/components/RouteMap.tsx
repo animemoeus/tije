@@ -852,6 +852,18 @@ export function RouteMap({
             'icon-opacity': fadeIn(ARROW_ZOOM),
           },
         })
+        // Zoomed out a bus is a dot of a few pixels; this invisible circle
+        // around each one takes the taps, like stops-hit for the stops.
+        m.addLayer({
+          id: 'buses-hit',
+          type: 'circle',
+          source: 'buses',
+          paint: { 'circle-radius': 12, 'circle-opacity': 0 },
+        })
+        // The city names sit where every route meets, so they go back on
+        // top of the buses.
+        for (const id of ['label_city', 'label_city_capital'])
+          if (m.getLayer(id)) m.moveLayer(id)
         setReady(true)
       })
       /** Opens a popup with `el` at `at` and returns it. */
@@ -867,8 +879,9 @@ export function RouteMap({
       m.on('click', 'routes', (e) => {
         // A click on a bus or stop over a route goes to the bus or stop.
         if (
-          m.queryRenderedFeatures(e.point, { layers: ['buses', 'stops-hit'] })
-            .length
+          m.queryRenderedFeatures(e.point, {
+            layers: ['buses-hit', 'stops-hit'],
+          }).length
         )
           return
         const p = e.features?.[0]?.properties
@@ -876,7 +889,7 @@ export function RouteMap({
       })
       let stopPopup: InstanceType<typeof Popup> | null = null
       m.on('click', 'stops-hit', (e) => {
-        if (m.queryRenderedFeatures(e.point, { layers: ['buses'] }).length)
+        if (m.queryRenderedFeatures(e.point, { layers: ['buses-hit'] }).length)
           return
         const f = e.features?.[0]
         if (f?.geometry.type !== 'Point') return
@@ -906,7 +919,7 @@ export function RouteMap({
           if (stopPopup === opened) focus?.setData(toGeoJSON([]))
         })
       })
-      m.on('click', 'buses', (e) => {
+      m.on('click', 'buses-hit', (e) => {
         const p = e.features?.[0]?.properties
         if (p) setSelectedBus(String(p.no))
       })
@@ -914,10 +927,10 @@ export function RouteMap({
       // also the bus card.
       m.on('click', (e) => {
         setTab('map')
-        if (!m.queryRenderedFeatures(e.point, { layers: ['buses'] }).length)
+        if (!m.queryRenderedFeatures(e.point, { layers: ['buses-hit'] }).length)
           setSelectedBus(null)
       })
-      for (const layer of ['routes', 'stops-hit', 'buses']) {
+      for (const layer of ['routes', 'stops-hit', 'buses-hit']) {
         m.on(
           'mouseenter',
           layer,
@@ -1271,26 +1284,56 @@ export function RouteMap({
       )
   }
 
+  // A pick made while the phone's sheet covers the map is framed once the
+  // sheet closes; there's too little map left to frame it into before.
+  const framePending = useRef(false)
+
+  /** Fits the map to the picked routes, clear of the floating controls. */
+  const framePick = () => {
+    const m = map.current
+    const pick = pickedRef.current
+    const b =
+      m && pick.size
+        ? boundsAround(
+            routesRef.current.filter((r) => pick.has(r.route_code)),
+            0.3,
+          )
+        : null
+    if (!m || !b) return
+    const desktop = matchMedia('(min-width: 768px)').matches
+    m.fitBounds(b, {
+      // Below the top bar and Halte chip, above the tab bar on phones.
+      padding: desktop
+        ? { top: 140, right: 60, bottom: 60, left: 60 }
+        : { top: 130, right: 32, bottom: 88, left: 32 },
+      duration: matchMedia('(prefers-reduced-motion: reduce)').matches
+        ? 0
+        : 600,
+    })
+  }
+
   // Draws the picked routes (all of them when none is picked) and their
   // stops, and frames a new pick.
   useEffect(() => {
     const m = map.current
     if (!m || !ready) return
-    const drawn = picked.size
-      ? routeList.filter((r) => picked.has(r.route_code))
-      : routeList
-    data.current = toGeoJSON(drawn)
+    data.current = toGeoJSON(
+      picked.size
+        ? routeList.filter((r) => picked.has(r.route_code))
+        : routeList,
+    )
     m.getSource<GeoJSONSource>('routes')?.setData(data.current)
     drawStops()
-    const b = picked.size ? boundsAround(drawn, 0.3) : null
-    if (b)
-      m.fitBounds(b, {
-        padding: 48,
-        duration: matchMedia('(prefers-reduced-motion: reduce)').matches
-          ? 0
-          : 600,
-      })
+    if (!picked.size) return
+    if (tab !== 'map' && !wide) framePending.current = true
+    else framePick()
   }, [ready, routeList, pickKey])
+
+  useEffect(() => {
+    if (tab !== 'map' || !framePending.current) return
+    framePending.current = false
+    framePick()
+  }, [tab])
 
   // Stops of the chosen types, shown unless the "Halte" chip is off.
   useEffect(() => {
@@ -1501,7 +1544,7 @@ export function RouteMap({
 
   // Filter chips, Google Maps style: outlined when off, tinted with a tick
   // when on. The native checkbox inside keeps keyboards and screen readers.
-  const chip = `inline-flex h-11 cursor-pointer select-none items-center gap-1.5 rounded-full border border-[var(--line)] bg-[var(--surface)] px-4 text-sm font-semibold text-[var(--ink)] transition-colors duration-150 hover:bg-[var(--field)] has-[:checked]:border-transparent has-[:checked]:bg-[var(--accent-soft)] has-[:checked]:text-[var(--accent-on-soft)] has-[:disabled]:cursor-default md:h-9 md:px-3 has-[:focus-visible]:outline-3 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-[var(--accent)]`
+  const chip = `inline-flex h-11 justify-center whitespace-nowrap cursor-pointer select-none items-center gap-1.5 rounded-full border border-[var(--line)] bg-[var(--surface)] px-4 text-sm font-semibold text-[var(--ink)] transition-colors duration-150 hover:bg-[var(--field)] has-[:checked]:border-transparent has-[:checked]:bg-[var(--accent-soft)] has-[:checked]:text-[var(--accent-on-soft)] has-[:disabled]:cursor-default md:h-9 md:px-3 has-[:focus-visible]:outline-3 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-[var(--accent)]`
   const tick = (
     <svg
       aria-hidden="true"
@@ -1614,7 +1657,8 @@ export function RouteMap({
             melihat rute itu saja.
           </p>
           {available.length ? (
-            <div className="flex flex-wrap gap-2">
+            // Equal cells, so the order reads left to right, then down.
+            <div className="grid grid-cols-[repeat(auto-fill,minmax(5.5rem,1fr))] gap-2">
               <label className={chip}>
                 <input
                   type="checkbox"
