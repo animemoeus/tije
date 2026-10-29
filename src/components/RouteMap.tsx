@@ -463,14 +463,23 @@ function headingArrow(color: string) {
 
 /**
  * Map of the routes of the chosen types with their live buses, and the side
- * panel that picks the types. An empty `types` means every route.
+ * panel that picks the types and routes. An empty `types` means every type,
+ * an empty `routes` every route of those types.
  */
 export function RouteMap({
   types,
   onTypesChange,
+  routes,
+  onRoutesChange,
+  showStops,
+  onShowStopsChange,
 }: {
   types: Array<string>
   onTypesChange: (types: Array<string>) => void
+  routes: Array<string>
+  onRoutesChange: (routes: Array<string>) => void
+  showStops: boolean
+  onShowStopsChange: (show: boolean) => void
 }) {
   // Effects depend on this string; the array is new on every render.
   const typeKey = types.join(',')
@@ -498,7 +507,10 @@ export function RouteMap({
     'connecting',
   )
   const [selectedBus, setSelectedBus] = useState<string | null>(null)
-  const [showStops, setShowStops] = useState(true)
+  // Every route of the chosen types, and every stop of them, before the
+  // route pick narrows what's drawn.
+  const [routeList, setRouteList] = useState<Array<Route>>([])
+  const stopsRef = useRef<Array<Stop>>([])
   // Phone tab bar: 'map' leaves the map clear, the others open their sheet.
   const [tab, setTab] = useState<'map' | 'filter' | 'info' | 'chat'>('map')
   // The sheet's last tab, still shown while the sheet slides away to the map.
@@ -773,6 +785,8 @@ export function RouteMap({
               ['linear'],
               ['zoom'],
               11,
+              1.75,
+              12,
               2.5,
               LABEL_ZOOM[0],
               5,
@@ -976,10 +990,32 @@ export function RouteMap({
     }
   }, [feedUrl])
 
+  // The picked routes that are among those loaded; a pick left over from
+  // other types waits in the URL until its type comes back.
+  const pickKey = routes.filter((c) => routeCodes.has(c)).join(',')
+  const picked = useMemo(
+    () => new Set(pickKey.split(',').filter(Boolean)),
+    [pickKey],
+  )
+  const pickedRef = useRef(picked)
+  pickedRef.current = picked
+  // Live buses per route of the chosen types, for the route chips.
+  const perRoute = useMemo(() => {
+    const n = new Map<string, number>()
+    for (const b of buses)
+      if (routeCodes.has(b.route_code))
+        n.set(b.route_code, (n.get(b.route_code) ?? 0) + 1)
+    return n
+  }, [buses, routeCodes])
   // Only buses on the routes currently drawn.
   const shownBuses = useMemo(
-    () => buses.filter((b) => routeCodes.has(b.route_code)),
-    [buses, routeCodes],
+    () =>
+      buses.filter(
+        (b) =>
+          routeCodes.has(b.route_code) &&
+          (!picked.size || picked.has(b.route_code)),
+      ),
+    [buses, routeCodes, picked],
   )
 
   useEffect(() => {
@@ -1201,10 +1237,9 @@ export function RouteMap({
     fetch(`${API}/routes${qs}`, { signal: ctrl.signal })
       .then((r) => (r.ok ? r.json() : Promise.reject(r)))
       .then((d: { routes: Array<Route> }) => {
-        data.current = toGeoJSON(d.routes)
         routesRef.current = d.routes
+        setRouteList(d.routes)
         const m = map.current
-        m?.getSource<GeoJSONSource>('routes')?.setData(data.current)
         m?.setPaintProperty('routes', 'line-opacity', ROUTE_OPACITY)
         // Keep the map within 5 km of the routes shown instead of the world.
         const b = boundsAround(d.routes, 5)
@@ -1222,7 +1257,42 @@ export function RouteMap({
     return () => ctrl.abort()
   }, [ready, typeKey, attempt])
 
-  // Stops of the chosen types, shown unless the "Halte" chip is unticked.
+  /** Draws the loaded stops, only those of the picked routes if any. */
+  const drawStops = () => {
+    const pick = pickedRef.current
+    map.current
+      ?.getSource<GeoJSONSource>('stops')
+      ?.setData(
+        stopsToGeoJSON(
+          pick.size
+            ? stopsRef.current.filter((s) => s.routes.some((c) => pick.has(c)))
+            : stopsRef.current,
+        ),
+      )
+  }
+
+  // Draws the picked routes (all of them when none is picked) and their
+  // stops, and frames a new pick.
+  useEffect(() => {
+    const m = map.current
+    if (!m || !ready) return
+    const drawn = picked.size
+      ? routeList.filter((r) => picked.has(r.route_code))
+      : routeList
+    data.current = toGeoJSON(drawn)
+    m.getSource<GeoJSONSource>('routes')?.setData(data.current)
+    drawStops()
+    const b = picked.size ? boundsAround(drawn, 0.3) : null
+    if (b)
+      m.fitBounds(b, {
+        padding: 48,
+        duration: matchMedia('(prefers-reduced-motion: reduce)').matches
+          ? 0
+          : 600,
+      })
+  }, [ready, routeList, pickKey])
+
+  // Stops of the chosen types, shown unless the "Halte" chip is off.
   useEffect(() => {
     const m = map.current
     if (!m || !ready) return
@@ -1235,11 +1305,10 @@ export function RouteMap({
     const qs = typeKey ? `?type=${encodeURIComponent(typeKey)}` : ''
     fetch(`${API}/stops${qs}`, { signal: ctrl.signal })
       .then((r) => (r.ok ? r.json() : Promise.reject(r)))
-      .then((d: { stops: Array<Stop> }) =>
-        map.current
-          ?.getSource<GeoJSONSource>('stops')
-          ?.setData(stopsToGeoJSON(d.stops)),
-      )
+      .then((d: { stops: Array<Stop> }) => {
+        stopsRef.current = d.stops
+        drawStops()
+      })
       .catch(() => {
         if (!ctrl.signal.aborted) setNotice('Gagal memuat halte.')
       })
@@ -1271,6 +1340,20 @@ export function RouteMap({
       : typeList.map((x) => x.type).filter((x) => x === t || shown.includes(x))
     onTypesChange(next.length === typeList.length ? [] : next)
   }
+  /** Adds or drops one route from the pick. */
+  const toggleRoute = (code: string) =>
+    onRoutesChange(
+      picked.has(code)
+        ? [...picked].filter((c) => c !== code)
+        : [...picked, code],
+    )
+  // Routes with buses on the road now, plus any picked one, in natural order.
+  const available = routeList
+    .filter((r) => perRoute.has(r.route_code) || picked.has(r.route_code))
+    .sort((a, b) =>
+      a.route_code.localeCompare(b.route_code, 'id', { numeric: true }),
+    )
+  const routeTotal = picked.size || count
   /** Hides a panel section on phones unless tab `t` is open. */
   const onTab = (t: typeof sheet) => (sheet === t ? '' : 'max-md:hidden')
 
@@ -1525,17 +1608,57 @@ export function RouteMap({
         </fieldset>
 
         <fieldset className={`m-0 border-0 p-0 ${onTab('filter')}`}>
-          <legend className="mb-3 text-base font-bold">Lapisan peta</legend>
-          <label className={chip}>
-            <input
-              type="checkbox"
-              className="peer sr-only"
-              checked={showStops}
-              onChange={() => setShowStops((v) => !v)}
-            />
-            {tick}
-            Halte
-          </label>
+          <legend className="text-base font-bold">Rute</legend>
+          <p className="mb-3 mt-1 text-sm text-[var(--ink-soft)]">
+            Rute yang sedang punya bus, dengan jumlah busnya. Pilih untuk
+            melihat rute itu saja.
+          </p>
+          {available.length ? (
+            <div className="flex flex-wrap gap-2">
+              <label className={chip}>
+                <input
+                  type="checkbox"
+                  className="peer sr-only"
+                  checked={!picked.size}
+                  disabled={!picked.size}
+                  onChange={() => onRoutesChange([])}
+                />
+                {tick}
+                Semua
+              </label>
+              {available.map((r) => (
+                <label key={r.route_code} className={chip} title={r.route_name}>
+                  <input
+                    type="checkbox"
+                    className="peer sr-only"
+                    checked={picked.has(r.route_code)}
+                    onChange={() => toggleRoute(r.route_code)}
+                  />
+                  {tick}
+                  <span
+                    className="min-w-6 rounded-md px-1.5 text-center text-xs font-bold leading-5 tabular-nums"
+                    style={{
+                      background: `#${r.route_color || '5f6368'}`,
+                      color: `#${r.route_text_color || 'ffffff'}`,
+                    }}
+                  >
+                    {r.route_code}
+                  </span>
+                  <span className="sr-only">{r.route_name},</span>
+                  <span className="font-medium tabular-nums opacity-70">
+                    {perRoute.get(r.route_code) ?? 0}
+                    <span className="sr-only"> bus</span>
+                  </span>
+                </label>
+              ))}
+            </div>
+          ) : (
+            <p className="m-0 text-sm text-[var(--ink-soft)]">
+              {status === 'done' && feed === 'open'
+                ? 'Belum ada bus di rute jenis ini.'
+                : 'Menunggu data bus…'}
+            </p>
+          )}
         </fieldset>
 
         <section aria-label="Ringkasan" className={onTab('info')}>
@@ -1556,8 +1679,8 @@ export function RouteMap({
             <div className="fade-in">
               <p className="m-0 text-lg font-bold tabular-nums">
                 {feed === 'open'
-                  ? `${busCount} bus aktif di ${count} rute`
-                  : `${count} rute di peta`}
+                  ? `${busCount} bus aktif di ${routeTotal} rute`
+                  : `${routeTotal} rute di peta`}
               </p>
               <p className="mb-0 mt-1 text-sm text-[var(--ink-soft)]">
                 {count === 0
@@ -1662,7 +1785,11 @@ export function RouteMap({
               ) : (
                 <>
                   {feed === 'open' && `${busCount} bus · `}
-                  <span className="text-[var(--ink-soft)]">{count} rute</span>
+                  <span className="text-[var(--ink-soft)]">
+                    {picked.size === 1
+                      ? `Rute ${pickKey}`
+                      : `${routeTotal} rute`}
+                  </span>
                 </>
               )}
             </p>
@@ -1670,6 +1797,33 @@ export function RouteMap({
           </>
         )}
       </div>
+
+      {/* Stop layer toggle, floating under the top bar like the place
+          chips in Google Maps. */}
+      <button
+        type="button"
+        aria-pressed={showStops}
+        onClick={() => onShowStopsChange(!showStops)}
+        className={`fade-in absolute left-3 top-[calc(env(safe-area-inset-top)+4.5rem)] z-10 flex h-11 cursor-pointer items-center gap-1.5 rounded-full px-4 text-sm font-semibold shadow-[var(--shadow)] transition-colors duration-150 md:left-auto md:right-6 md:top-[5.25rem] md:h-10 ${showStops ? 'bg-[var(--accent-soft)] text-[var(--accent-on-soft)]' : 'bg-[var(--surface)] text-[var(--ink)] hover:bg-[var(--field)]'} ${focus}`}
+      >
+        <svg
+          aria-hidden="true"
+          viewBox="0 0 24 24"
+          className="h-4 w-4"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth={2.5}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          {showStops ? (
+            <path d="m5 12 5 5 9-10" />
+          ) : (
+            <path d="M12 21v-8m0 0a4.5 4.5 0 1 0 0-9 4.5 4.5 0 0 0 0 9Z" />
+          )}
+        </svg>
+        Halte
+      </button>
 
       {/* Desktop zoom, Google Maps style: one rounded column of + and −.
           Phones pinch instead. */}
@@ -1765,7 +1919,7 @@ export function RouteMap({
           role="dialog"
           aria-label="Diskusi"
           onKeyDown={(e) => e.key === 'Escape' && setChat(false)}
-          className="fade-in absolute bottom-[5.5rem] right-6 top-[5.25rem] z-20 flex w-[min(26rem,calc(100%-3rem))] flex-col rounded-2xl bg-[var(--surface)] shadow-[var(--shadow)]"
+          className="fade-in absolute bottom-[5.5rem] right-[5.25rem] top-[9rem] z-20 flex w-[min(26rem,calc(100%-6.5rem))] flex-col rounded-2xl bg-[var(--surface)] shadow-[var(--shadow)]"
         >
           <div className="flex shrink-0 items-center justify-between border-b border-[var(--line)] py-2 pl-5 pr-2">
             <h2 className="m-0 text-base font-bold">Diskusi</h2>
@@ -1794,10 +1948,11 @@ export function RouteMap({
         </div>
       )}
 
-      {/* Snackbar, centred above the locate button. */}
+      {/* Snackbar: centred above the locate button on phones, left of the
+          bottom-right buttons from md up so it never covers them. */}
       <p
         role="status"
-        className="pointer-events-none absolute inset-x-3 bottom-[calc(4rem+env(safe-area-inset-bottom)+4.5rem)] z-20 m-0 flex justify-center md:bottom-24 md:left-auto md:right-6 md:max-w-sm md:justify-end"
+        className="pointer-events-none absolute inset-x-3 bottom-[calc(4rem+env(safe-area-inset-bottom)+4.5rem)] z-20 m-0 flex justify-center md:bottom-6 md:left-auto md:right-[9.25rem] md:max-w-sm md:justify-end"
       >
         {notice && (
           <span className="fade-in rounded-lg bg-[#303134] px-4 py-3 text-sm font-medium text-white shadow-[var(--shadow)]">
