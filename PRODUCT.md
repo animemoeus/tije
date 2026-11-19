@@ -21,7 +21,7 @@ Live positions for the whole fleet (about 1,200 buses on the default routes, 3,9
 ## Operating Context
 
 - Phone first, installed to the home screen as a standalone portrait app, or opened from a link. Desktop is a full second home, not a stretched phone layout.
-- Data comes from tije-api: route types, routes, stops, a WebSocket bus feed that updates every 1.5 to 2 seconds, and a per-bus event stream. The feed can drop and reconnect, and the API can be down.
+- Data comes from tije-api: route types, routes, stops, an SSE bus feed (`GET /buses`) that updates every 1.5 to 2 seconds, and a per-bus event stream. The feed can drop and reconnect, and the API can be down.
 - Location comes from the browser's geolocation and needs HTTPS.
 - All UI text is Indonesian.
 

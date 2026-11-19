@@ -14,8 +14,6 @@ import { API, DEFAULT_TYPES } from '#/api'
 import { DiscussionEmbed } from 'disqus-react'
 import { BusInfo } from './BusInfo'
 
-const WS = API.replace(/^http/, 'ws')
-
 type Route = {
   route_code: string
   route_name: string
@@ -543,13 +541,15 @@ export function RouteMap({
     const timer = setTimeout(() => setNotice(null), 5000)
     return () => clearTimeout(timer)
   }, [notice])
-  // The server sends only the buses of the routes drawn. Sorted so the same
-  // routes give the same URL and don't reconnect; no routes means no feed,
-  // since a feed without ?routes would send every bus.
+  // The server sends only the buses of the drawn routes, or all buses when
+  // every type is chosen. Wait until routes load so an empty map opens no feed.
+  const allTypes = types.length === 0
   const feedUrl = useMemo(() => {
+    if (!routeCodes.size) return ''
+    if (allTypes) return `${API}/buses`
     const codes = [...routeCodes].sort().join(',')
-    return codes ? `${WS}/ws?routes=${encodeURIComponent(codes)}` : ''
-  }, [routeCodes])
+    return `${API}/buses?routes=${encodeURIComponent(codes)}`
+  }, [routeCodes, allTypes])
 
   // A new route filter may hide the selected bus, so close its card.
   useEffect(() => setSelectedBus(null), [typeKey])
@@ -950,22 +950,35 @@ export function RouteMap({
 
   useEffect(() => {
     if (!feedUrl) return
-    let ws: WebSocket | undefined
+    let es: EventSource | undefined
     let retry: ReturnType<typeof setTimeout> | undefined
     let closed = false
+    /** Opens an EventSource for the feed URL and resets the connection fleet. */
     const connect = () => {
+      clearTimeout(retry)
+      retry = undefined
+      es?.close()
       // Buses by body number for this connection only, so a reconnect
       // starts clean from the server's first snapshot.
       const fleet = new Map<string, Bus>()
       setFeed('connecting')
-      ws = new WebSocket(feedUrl)
-      ws.onopen = () => setFeed('open')
-      ws.onmessage = (e) => {
-        const msg = JSON.parse(String(e.data)) as {
+      const source = new EventSource(feedUrl)
+      es = source
+      source.onopen = () => {
+        if (!closed && es === source) setFeed('open')
+      }
+      source.onmessage = (e) => {
+        if (closed || es !== source) return
+        let msg: {
           type: string
           buses?: Array<Bus>
           upsert?: Array<Partial<Bus> & { bus_body_no: string }>
           remove?: Array<string>
+        }
+        try {
+          msg = JSON.parse(String(e.data)) as typeof msg
+        } catch {
+          return
         }
         if (msg.type === 'snapshot' && msg.buses) {
           // The first message of each connection.
@@ -990,16 +1003,39 @@ export function RouteMap({
         } else return
         setBuses([...fleet.values()])
       }
-      ws.onclose = () => {
+      // While CONNECTING, EventSource retries natively; CLOSED needs a fallback timer.
+      source.onerror = () => {
+        if (closed || es !== source) return
         setFeed('closed')
-        if (!closed) retry = setTimeout(connect, 3000)
+        if (source.readyState === EventSource.CLOSED) {
+          source.close()
+          clearTimeout(retry)
+          retry = setTimeout(connect, 3000)
+        }
       }
     }
+    /** Reconnects when the browser regains network connectivity. */
+    const onOnline = () => {
+      if (!closed && es?.readyState !== EventSource.OPEN) connect()
+    }
+    /** Reconnects when a hidden tab becomes visible again after a drop. */
+    const onVisibility = () => {
+      if (
+        !closed &&
+        document.visibilityState === 'visible' &&
+        es?.readyState !== EventSource.OPEN
+      )
+        connect()
+    }
     connect()
+    window.addEventListener('online', onOnline)
+    document.addEventListener('visibilitychange', onVisibility)
     return () => {
       closed = true
       clearTimeout(retry)
-      ws?.close()
+      window.removeEventListener('online', onOnline)
+      document.removeEventListener('visibilitychange', onVisibility)
+      es?.close()
     }
   }, [feedUrl])
 
