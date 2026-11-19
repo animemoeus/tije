@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type {
   ExpressionSpecification,
+  GeoJSONFeatureDiff,
   GeoJSONSource,
   Map as MlMap,
   Marker,
 } from 'maplibre-gl'
-import type { FeatureCollection, Point } from 'geojson'
+import type { Feature, FeatureCollection, Point } from 'geojson'
 import 'maplibre-gl/dist/maplibre-gl.css'
 // maplibre resolves its worker next to its own module, which breaks once Vite
 // pre-bundles it; let Vite bundle the worker and hand maplibre the URL.
@@ -258,28 +259,57 @@ function markerSize(code: string) {
   return { label, textSize, radius }
 }
 
+type BusProperties = {
+  code: string
+  headsign: string
+  no: string
+  next: string
+  color: string
+  textColor: string
+  bearing: number
+  label: string
+  textSize: number
+  radius: number
+}
+
+type BusFeature = Feature<Point, BusProperties>
+
+/** Builds a GeoJSON point feature for one bus. */
+function busFeature(b: Bus): BusFeature {
+  return {
+    type: 'Feature',
+    properties: {
+      code: b.route_code,
+      headsign: b.trip_headsign,
+      no: b.bus_body_no,
+      next: b.next_stop_name,
+      color: `#${b.route_color || '555555'}`,
+      textColor: `#${b.route_text_color || 'ffffff'}`,
+      bearing: b.bearing,
+      ...markerSize(b.route_code),
+    },
+    geometry: {
+      type: 'Point',
+      coordinates: [b.longitude, b.latitude],
+    },
+  }
+}
+
 /** One point per bus, with what the bus layers and the popup read. */
-function busesToGeoJSON(buses: Array<Bus>): FeatureCollection {
+function busesToGeoJSON(
+  buses: Array<Bus>,
+): FeatureCollection<Point, BusProperties> {
   return {
     type: 'FeatureCollection',
-    features: buses.map((b) => ({
-      type: 'Feature' as const,
-      properties: {
-        code: b.route_code,
-        headsign: b.trip_headsign,
-        no: b.bus_body_no,
-        next: b.next_stop_name,
-        color: `#${b.route_color || '555555'}`,
-        textColor: `#${b.route_text_color || 'ffffff'}`,
-        bearing: b.bearing,
-        ...markerSize(b.route_code),
-      },
-      geometry: {
-        type: 'Point' as const,
-        coordinates: [b.longitude, b.latitude],
-      },
-    })),
+    features: buses.map(busFeature),
   }
+}
+
+/** Returns true when two per-route bus count maps hold identical entries. */
+function sameCounts(a: Map<string, number>, b: Map<string, number>) {
+  if (a.size !== b.size) return false
+  for (const [k, v] of a) if (b.get(k) !== v) return false
+  return true
 }
 
 /** One line per route direction, with the API's [lat, lon] flipped to [lon, lat]. */
@@ -500,7 +530,15 @@ export function RouteMap({
   const [attempt, setAttempt] = useState(0)
   const [count, setCount] = useState(0)
   const [routeCodes, setRouteCodes] = useState<Set<string>>(new Set())
-  const [buses, setBuses] = useState<Array<Bus>>([])
+  const fleetRef = useRef(new Map<string, Bus>())
+  const busFeatures = useRef(
+    new Map<string, { feature: BusFeature; bus: Bus }>(),
+  )
+  const [busCounts, setBusCounts] = useState<{
+    perRoute: Map<string, number>
+    shown: number
+  }>(() => ({ perRoute: new Map(), shown: 0 }))
+  const busCountsRef = useRef(busCounts)
   const [feed, setFeed] = useState<'connecting' | 'open' | 'closed'>(
     'connecting',
   )
@@ -761,7 +799,11 @@ export function RouteMap({
         // it reports a new position: solid near the bus, fading to clear at
         // the edge (PING_BLUR), so it has no hard rim. It sits under the
         // buses so it seems to come out of them.
-        m.addSource('pings', { type: 'geojson', data: busesToGeoJSON([]) })
+        m.addSource('pings', {
+          type: 'geojson',
+          data: busesToGeoJSON([]),
+          promoteId: 'no',
+        })
         m.addLayer({
           id: 'bus-ping',
           type: 'circle',
@@ -771,7 +813,11 @@ export function RouteMap({
             'circle-blur': PING_BLUR,
           },
         })
-        m.addSource('buses', { type: 'geojson', data: busData.current })
+        m.addSource('buses', {
+          type: 'geojson',
+          data: busData.current,
+          promoteId: 'no',
+        })
         // Each bus is a circle in the route colour with its route code.
         // Zoomed out, buses are too close for that (see LABEL_ZOOM), so
         // they shrink to small dots and the code is hidden.
@@ -1001,7 +1047,8 @@ export function RouteMap({
             } as Bus)
           }
         } else return
-        setBuses([...fleet.values()])
+        fleetRef.current = fleet
+        syncBuses.current()
       }
       // While CONNECTING, EventSource retries natively; CLOSED needs a fallback timer.
       source.onerror = () => {
@@ -1048,40 +1095,73 @@ export function RouteMap({
   )
   const pickedRef = useRef(picked)
   pickedRef.current = picked
-  // Live buses per route of the chosen types, for the route chips.
-  const perRoute = useMemo(() => {
-    const n = new Map<string, number>()
-    for (const b of buses)
-      if (routeCodes.has(b.route_code))
-        n.set(b.route_code, (n.get(b.route_code) ?? 0) + 1)
-    return n
-  }, [buses, routeCodes])
-  // Only buses on the routes currently drawn.
-  const shownBuses = useMemo(
-    () =>
-      buses.filter(
-        (b) =>
-          routeCodes.has(b.route_code) &&
-          (!picked.size || picked.has(b.route_code)),
-      ),
-    [buses, routeCodes, picked],
-  )
+  const routeCodesRef = useRef(routeCodes)
+  routeCodesRef.current = routeCodes
+  const selectedBusRef = useRef(selectedBus)
+  selectedBusRef.current = selectedBus
+  const focusRef = useRef<{
+    bus: Bus | undefined
+    path: Array<[number, number]>
+  }>({ bus: undefined, path: [] })
+  const syncBuses = useRef<() => void>(() => {})
 
-  useEffect(() => {
+  /** Syncs the live fleet to React counts, the focus line, and MapLibre via updateData. */
+  syncBuses.current = () => {
+    const codes = routeCodesRef.current
+    const pick = pickedRef.current
+    const perRoute = new Map<string, number>()
+    const shown: Array<Bus> = []
+    for (const b of fleetRef.current.values()) {
+      if (!codes.has(b.route_code)) continue
+      perRoute.set(b.route_code, (perRoute.get(b.route_code) ?? 0) + 1)
+      if (!pick.size || pick.has(b.route_code)) shown.push(b)
+    }
+    // Skip React state updates when only bus positions changed, avoiding full JSX re-renders.
+    if (
+      shown.length !== busCountsRef.current.shown ||
+      !sameCounts(perRoute, busCountsRef.current.perRoute)
+    ) {
+      const next = { perRoute, shown: shown.length }
+      busCountsRef.current = next
+      setBusCounts(next)
+    }
+
+    const sel = selectedBusRef.current
+    const focusBus = sel ? shown.find((b) => b.bus_body_no === sel) : undefined
+    const focusPath = focusBus ? pathAhead(focusBus, routesRef.current) : []
+    focusRef.current = { bus: focusBus, path: focusPath }
     const m = map.current
+    m?.getSource<GeoJSONSource>('focus')?.setData({
+      type: 'FeatureCollection',
+      features:
+        focusBus && focusPath.length > 1
+          ? [
+              {
+                type: 'Feature',
+                properties: { color: `#${focusBus.route_color || '555555'}` },
+                geometry: { type: 'LineString', coordinates: focusPath },
+              },
+            ]
+          : [],
+    })
+
     const still = matchMedia('(prefers-reduced-motion: reduce)').matches
     const now = performance.now()
-    busData.current = busesToGeoJSON(shownBuses)
+    const seen = new Set<string>()
+    const add: Array<BusFeature> = []
+    const update: Array<GeoJSONFeatureDiff> = []
+    const remove: Array<string> = []
+    const bearings = new Map<string, number>()
+
     // Each bus glides from where it's drawn now to its new position, along
     // its route line when it's on one. Far or implausibly fast moves jump.
-    const seen = new Set<string>()
-    busData.current.features.forEach((f, idx) => {
-      const bus = shownBuses[idx]
+    for (const bus of shown) {
       const no = bus.bus_body_no
+      seen.add(no)
+      bearings.set(no, bus.bearing)
       const to: Vec = [bus.longitude, bus.latitude]
       const k = Math.cos((bus.latitude * Math.PI) / 180)
       const g = glides.current.get(no)
-      seen.add(no)
       const last = g?.path[g.path.length - 1]
       if (!g || last![0] !== to[0] || last![1] !== to[1]) {
         const at = g ? glideAt(g, now).at : to
@@ -1114,55 +1194,178 @@ export function RouteMap({
       }
       // Start from where it's drawn, so nothing flashes at the new spot.
       const g2 = glides.current.get(no)!
-      ;(f.geometry as Point).coordinates = glideAt(g2, now).at
-      f.properties!.bearing = g2.h
-    })
+      const at = glideAt(g2, now).at
+      const existing = busFeatures.current.get(no)
+      if (!existing) {
+        const feature = busFeature(bus)
+        feature.geometry.coordinates = at
+        feature.properties.bearing = g2.h
+        busFeatures.current.set(no, { feature, bus })
+        add.push(feature)
+      } else {
+        const prevBus = existing.bus
+        const prevCoords = existing.feature.geometry.coordinates
+        const coordChanged =
+          Math.abs(prevCoords[0] - at[0]) > 1e-7 ||
+          Math.abs(prevCoords[1] - at[1]) > 1e-7
+        if (coordChanged) existing.feature.geometry.coordinates = at
+        const propDiffs: Array<{ key: string; value: unknown }> = []
+        if (prevBus.route_code !== bus.route_code) {
+          const size = markerSize(bus.route_code)
+          Object.assign(existing.feature.properties, {
+            code: bus.route_code,
+            ...size,
+          })
+          propDiffs.push(
+            { key: 'code', value: bus.route_code },
+            { key: 'label', value: size.label },
+            { key: 'textSize', value: size.textSize },
+            { key: 'radius', value: size.radius },
+          )
+        }
+        if (prevBus.trip_headsign !== bus.trip_headsign) {
+          existing.feature.properties.headsign = bus.trip_headsign
+          propDiffs.push({ key: 'headsign', value: bus.trip_headsign })
+        }
+        if (prevBus.next_stop_name !== bus.next_stop_name) {
+          existing.feature.properties.next = bus.next_stop_name
+          propDiffs.push({ key: 'next', value: bus.next_stop_name })
+        }
+        if (prevBus.route_color !== bus.route_color) {
+          const color = `#${bus.route_color || '555555'}`
+          existing.feature.properties.color = color
+          propDiffs.push({ key: 'color', value: color })
+        }
+        if (prevBus.route_text_color !== bus.route_text_color) {
+          const textColor = `#${bus.route_text_color || 'ffffff'}`
+          existing.feature.properties.textColor = textColor
+          propDiffs.push({ key: 'textColor', value: textColor })
+        }
+        if (Math.abs(existing.feature.properties.bearing - g2.h) > 0.1) {
+          existing.feature.properties.bearing = g2.h
+          propDiffs.push({ key: 'bearing', value: g2.h })
+        }
+        existing.bus = bus
+        if (coordChanged || propDiffs.length) {
+          update.push({
+            id: no,
+            ...(coordChanged
+              ? { newGeometry: { type: 'Point', coordinates: at } }
+              : {}),
+            ...(propDiffs.length ? { addOrUpdateProperties: propDiffs } : {}),
+          })
+        }
+      }
+    }
+
     for (const no of glides.current.keys())
       if (!seen.has(no)) glides.current.delete(no)
+    for (const no of busFeatures.current.keys()) {
+      if (!seen.has(no)) {
+        busFeatures.current.delete(no)
+        remove.push(no)
+      }
+    }
+    busData.current.features = [...busFeatures.current.values()].map(
+      (x) => x.feature,
+    )
+    const busSource = m?.getSource<GeoJSONSource>('buses')
+    if (busSource && (add.length || remove.length || update.length)) {
+      void busSource.updateData({
+        ...(add.length ? { add } : {}),
+        ...(remove.length ? { remove } : {}),
+        ...(update.length ? { update } : {}),
+      })
+    }
+
     for (const [no, t0] of pings.current)
       if (now - t0 >= PING_MS || still) pings.current.delete(no)
     // Rings share their bus's geometry, so they glide along with it.
-    const rings: FeatureCollection = {
+    const rings: FeatureCollection<Point, BusProperties & { t0: number }> = {
       type: 'FeatureCollection',
-      features: busData.current.features
-        .filter((f) => pings.current.has(String(f.properties!.no)))
-        .map((f) => ({
-          ...f,
-          properties: {
-            ...f.properties,
-            t0: pings.current.get(f.properties!.no),
-          },
-        })),
+      features: [...pings.current.entries()]
+        .filter(([no]) => busFeatures.current.has(no))
+        .map(([no, t0]) => {
+          const f = busFeatures.current.get(no)!.feature
+          return {
+            type: 'Feature' as const,
+            properties: { ...f.properties, t0 },
+            geometry: {
+              type: 'Point' as const,
+              coordinates: [...f.geometry.coordinates],
+            },
+          }
+        }),
     }
     m?.getSource<GeoJSONSource>('pings')?.setData(rings)
     // The new frame loop reads this message's rings, so drop the old one.
     cancelAnimationFrame(frame.current)
-    if (!m) return
-    // ponytail: setData on every frame resends all buses to the worker; fine
-    // for a few hundred, throttle or use updateData if "all" (~3,900) lags.
+    if (!m || !busSource) return
     /** Draws one frame and keeps going while a bus or a ring still moves. */
     function draw(t: number) {
       let busy = false
       const turn =
         1 - Math.exp(-Math.min(1000, t - lastFrame.current) / TURN_MS)
       lastFrame.current = t
-      busData.current.features.forEach((f, idx) => {
-        const g = glides.current.get(String(f.properties!.no))
-        if (!g) return
+      const frameUpdates: Array<GeoJSONFeatureDiff> = []
+      for (const [no, entry] of busFeatures.current) {
+        const g = glides.current.get(no)
+        if (!g) continue
         const { at, heading } = glideAt(g, t)
-        ;(f.geometry as Point).coordinates = at
+        const prevCoords = entry.feature.geometry.coordinates
+        const coordChanged =
+          Math.abs(prevCoords[0] - at[0]) > 1e-7 ||
+          Math.abs(prevCoords[1] - at[1]) > 1e-7
         // Point where the bus is going while it moves; once it stops, keep
         // that heading, or the reported one if it has never moved.
-        const aim = heading ?? (g.moved ? g.h : shownBuses[idx].bearing)
+        const aim = heading ?? (g.moved ? g.h : (bearings.get(no) ?? g.h))
         const diff = ((aim - g.h + 540) % 360) - 180
         g.h = still ? aim : (g.h + diff * turn + 360) % 360
-        f.properties!.bearing = g.h
+        const bearingChanged =
+          Math.abs(entry.feature.properties.bearing - g.h) > 0.1
+        if (coordChanged) entry.feature.geometry.coordinates = at
+        if (bearingChanged) entry.feature.properties.bearing = g.h
+        if (coordChanged || bearingChanged) {
+          frameUpdates.push({
+            id: no,
+            ...(coordChanged
+              ? { newGeometry: { type: 'Point', coordinates: at } }
+              : {}),
+            ...(bearingChanged
+              ? { addOrUpdateProperties: [{ key: 'bearing', value: g.h }] }
+              : {}),
+          })
+        }
         busy ||= heading !== null || Math.abs(diff) > 0.5
-      })
+      }
       const mm = map.current
-      mm?.getSource<GeoJSONSource>('buses')?.setData(busData.current)
+      if (frameUpdates.length) {
+        void mm?.getSource<GeoJSONSource>('buses')?.updateData({
+          update: frameUpdates,
+        })
+      }
       if (mm && rings.features.length) {
-        mm.getSource<GeoJSONSource>('pings')?.setData(rings)
+        const ringUpdates: Array<GeoJSONFeatureDiff> = []
+        for (const rf of rings.features) {
+          const bf = busFeatures.current.get(rf.properties.no)?.feature
+          if (!bf) continue
+          const c = bf.geometry.coordinates
+          if (
+            rf.geometry.coordinates[0] !== c[0] ||
+            rf.geometry.coordinates[1] !== c[1]
+          ) {
+            rf.geometry.coordinates = c
+            ringUpdates.push({
+              id: rf.properties.no,
+              newGeometry: { type: 'Point', coordinates: c },
+            })
+          }
+        }
+        if (ringUpdates.length) {
+          void mm.getSource<GeoJSONSource>('pings')?.updateData({
+            update: ringUpdates,
+          })
+        }
         const { radius, opacity } = pingPaint(t)
         mm.setPaintProperty('bus-ping', 'circle-radius', radius)
         mm.setPaintProperty('bus-ping', 'circle-opacity', opacity)
@@ -1171,33 +1374,13 @@ export function RouteMap({
       frame.current = busy && mm ? requestAnimationFrame(draw) : 0
     }
     frame.current = requestAnimationFrame(draw)
-  }, [shownBuses])
+  }
 
-  const focusBus = shownBuses.find((b) => b.bus_body_no === selectedBus)
-  const focusPath = useMemo(
-    () => (focusBus ? pathAhead(focusBus, routesRef.current) : []),
-    [focusBus],
-  )
-  // Read by the camera effect, which runs only when the selection changes.
-  const focusRef = useRef({ bus: focusBus, path: focusPath })
-  focusRef.current = { bus: focusBus, path: focusPath }
-
-  // Draw the route ahead of the selected bus; it shortens as the bus moves.
   useEffect(() => {
-    map.current?.getSource<GeoJSONSource>('focus')?.setData({
-      type: 'FeatureCollection',
-      features:
-        focusBus && focusPath.length > 1
-          ? [
-              {
-                type: 'Feature',
-                properties: { color: `#${focusBus.route_color || '555555'}` },
-                geometry: { type: 'LineString', coordinates: focusPath },
-              },
-            ]
-          : [],
-    })
-  }, [focusBus, focusPath])
+    syncBuses.current()
+  }, [ready, routeCodes, pickKey, selectedBus])
+
+  const { perRoute, shown: shownCount } = busCounts
 
   // Fade every other route and bus while one is selected, and bring the bus
   // and the rest of its trip into view.
@@ -1595,7 +1778,7 @@ export function RouteMap({
       <path d="m5 12 5 5 9-10" />
     </svg>
   )
-  const busCount = shownBuses.length.toLocaleString('id-ID')
+  const busCount = shownCount.toLocaleString('id-ID')
   // The live feed's state, at the end of the floating top bar.
   const liveState = (
     <p
@@ -1788,6 +1971,15 @@ export function RouteMap({
             laporan:{' '}
             <a href="mailto:arter@tije.info" className="font-semibold">
               arter@tije.info
+            </a>
+            {' · '}
+            <a
+              target="_blank"
+              rel="noopener noreferrer"
+              href="https://status.tije.info/"
+              className="font-semibold"
+            >
+              Status layanan
             </a>
           </p>
           <p className="m-0 text-xs leading-relaxed text-[var(--ink-soft)] [&_a]:text-[var(--ink-soft)] [&_a:hover]:text-[var(--ink)]">
