@@ -105,6 +105,8 @@ const TURN_MS = 150
 const PING_OPACITY = 1
 // Outer share of the glow's radius that fades out; inside it the colour is solid.
 const PING_BLUR = 0.6
+// Sort key high enough to keep the selected bus drawn above every other bus.
+const SELECTED_SORT_KEY = 2_000_000
 // Speech bubble for the discussion tab and button.
 const CHAT_ICON = 'M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12Z'
 
@@ -247,6 +249,26 @@ function fadeIn(
 }
 
 /**
+ * Deterministic z-order key in [0, 1_000_000) from a bus body number so
+ * nearby buses keep a fixed stacking order across position updates.
+ */
+function busSortKey(no: string): number {
+  let h = 0x811c9dc5
+  for (let i = 0; i < no.length; i++) {
+    h ^= no.charCodeAt(i)
+    h = Math.imul(h, 0x01000193)
+  }
+  return (h >>> 0) % 1_000_000
+}
+
+/** Text size and circle radius (px) that fit `label` inside a bus badge. */
+function badgeMetrics(label: string) {
+  const textSize = label.length <= 3 ? 11 : 9
+  const radius = Math.max(10, label.length * textSize * 0.3 + 4)
+  return { textSize, radius }
+}
+
+/**
  * Label, text size and circle radius (px) for a bus marker, so the label fits
  * inside the circle. Every Mikrotrans code starts with "JAK.", so the marker
  * drops it (JAK.43B shows as 43B); the full code stays in the popup. Bold
@@ -254,9 +276,7 @@ function fadeIn(
  */
 function markerSize(code: string) {
   const label = code.replace(/^JAK\./, '')
-  const textSize = label.length <= 3 ? 11 : 9
-  const radius = Math.max(10, label.length * textSize * 0.3 + 4)
-  return { label, textSize, radius }
+  return { label, ...badgeMetrics(label) }
 }
 
 type BusProperties = {
@@ -267,6 +287,7 @@ type BusProperties = {
   color: string
   textColor: string
   bearing: number
+  sortKey: number
   label: string
   textSize: number
   radius: number
@@ -286,6 +307,7 @@ function busFeature(b: Bus): BusFeature {
       color: `#${b.route_color || '555555'}`,
       textColor: `#${b.route_text_color || 'ffffff'}`,
       bearing: b.bearing,
+      sortKey: busSortKey(b.bus_body_no),
       ...markerSize(b.route_code),
     },
     geometry: {
@@ -395,6 +417,53 @@ function stopCard(
   return el
 }
 
+/**
+ * Popup content listing stacked buses at one tap point so the rider can pick
+ * which bus to inspect. Built with textContent so API values never become markup.
+ */
+function busPickerCard(
+  buses: Array<{
+    no: string
+    code: string
+    headsign: string
+    color: string
+    textColor: string
+  }>,
+  onPick: (no: string) => void,
+) {
+  const el = document.createElement('div')
+  const count = document.createElement('small')
+  count.className = 'stop-kind'
+  count.textContent = `${buses.length} bus di sini`
+  const list = document.createElement('div')
+  list.className = 'bus-picker'
+  for (const b of buses) {
+    const btn = document.createElement('button')
+    btn.type = 'button'
+    btn.className = 'bus-picker-item'
+    const code = document.createElement('span')
+    code.className = 'bus-picker-code'
+    code.textContent = b.code
+    code.style.background = b.color
+    code.style.color = b.textColor
+    const headsign = document.createElement('span')
+    headsign.className = 'bus-picker-headsign'
+    headsign.textContent = b.headsign || b.no
+    const no = document.createElement('span')
+    no.className = 'bus-picker-no'
+    no.textContent = b.no
+    btn.append(code, headsign, no)
+    btn.addEventListener('click', (e) => {
+      // Detaching the popup before bubble would make BusInfo see a target outside .maplibregl-map.
+      e.stopPropagation()
+      onPick(b.no)
+    })
+    list.append(btn)
+  }
+  el.append(count, list)
+  return el
+}
+
 const KM_PER_DEG = 111.32
 
 /**
@@ -487,6 +556,37 @@ function headingArrow(color: string) {
   ctx.strokeStyle = color
   ctx.stroke()
   return ctx.getImageData(0, 0, size, size)
+}
+
+/**
+ * Composite bus badge (filled route circle, 2px white rim, and centred route
+ * code) drawn at 2x so an overlapping front bus hides the label behind it.
+ */
+function busBadge(label: string, color: string, textColor: string) {
+  const { textSize, radius } = badgeMetrics(label)
+  const scale = 2
+  const size = Math.ceil((radius + 2) * 2) + 2
+  const c = document.createElement('canvas')
+  c.width = c.height = size * scale
+  const ctx = c.getContext('2d')!
+  ctx.scale(scale, scale)
+  const cx = size / 2
+  // Stroke centered at radius + 1 so the 2px white rim sits outside the fill.
+  ctx.beginPath()
+  ctx.arc(cx, cx, radius + 1, 0, Math.PI * 2)
+  ctx.lineWidth = 2
+  ctx.strokeStyle = '#ffffff'
+  ctx.stroke()
+  ctx.beginPath()
+  ctx.arc(cx, cx, radius, 0, Math.PI * 2)
+  ctx.fillStyle = color
+  ctx.fill()
+  ctx.font = `700 ${textSize}px "Plus Jakarta Sans", "Noto Sans", system-ui, sans-serif`
+  ctx.fillStyle = textColor
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+  ctx.fillText(label, cx, cx + 0.5)
+  return ctx.getImageData(0, 0, c.width, c.height)
 }
 
 /**
@@ -609,14 +709,23 @@ export function RouteMap({
         pitchWithRotate: false,
       })
       m.touchZoomRotate.disableRotation()
-      // Draw the arrow for each route colour the first time a bus needs it.
+      // Draw the arrow and composite badge the first time a bus needs them.
       // A resolver, since a styleimagemissing listener can't supply the image
       // for the request that fired it (maplibre then warns it's missing).
       m.setMissingStyleImageResolver((id) => {
-        if (!id.startsWith('arrow-') || m.hasImage(id)) return
-        m.addImage(id, headingArrow(id.slice('arrow-'.length)), {
-          pixelRatio: 2,
-        })
+        if (m.hasImage(id)) return
+        if (id.startsWith('arrow-')) {
+          m.addImage(id, headingArrow(id.slice('arrow-'.length)), {
+            pixelRatio: 2,
+          })
+          return
+        }
+        if (id.startsWith('badge|')) {
+          const parts = id.split('|')
+          if (parts.length !== 4) return
+          const [, label, color, textColor] = parts
+          m.addImage(id, busBadge(label, color, textColor), { pixelRatio: 2 })
+        }
       })
       m.on('load', () => {
         // Positron is grey; give water and greenery their natural colours.
@@ -818,13 +927,16 @@ export function RouteMap({
           data: busData.current,
           promoteId: 'no',
         })
-        // Each bus is a circle in the route colour with its route code.
-        // Zoomed out, buses are too close for that (see LABEL_ZOOM), so
-        // they shrink to small dots and the code is hidden.
+        // Zoomed out, buses are too close for badges (see LABEL_ZOOM), so they
+        // stay small dots until the composite badges take over at LABEL_ZOOM[1].
         m.addLayer({
           id: 'buses',
           type: 'circle',
           source: 'buses',
+          maxzoom: LABEL_ZOOM[1],
+          layout: {
+            'circle-sort-key': ['get', 'sortKey'],
+          },
           paint: {
             'circle-radius': [
               'interpolate',
@@ -852,24 +964,7 @@ export function RouteMap({
             'circle-stroke-color': '#ffffff',
           },
         })
-        m.addLayer({
-          id: 'bus-label',
-          type: 'symbol',
-          source: 'buses',
-          // Text waits until the circle is almost big enough to hold it.
-          minzoom: LABEL_ZOOM[1] - 0.5,
-          layout: {
-            'text-field': ['get', 'label'],
-            'text-font': ['Noto Sans Bold'],
-            'text-size': ['get', 'textSize'],
-            'text-allow-overlap': true,
-            'text-ignore-placement': true,
-          },
-          paint: {
-            'text-color': ['get', 'textColor'],
-            'text-opacity': fadeIn(LABEL_FADE),
-          },
-        })
+        // Drawn under bus-badge so a rear bus's arrow never covers a front label.
         m.addLayer({
           id: 'bus-heading',
           type: 'symbol',
@@ -893,9 +988,45 @@ export function RouteMap({
             ],
             'icon-allow-overlap': true,
             'icon-ignore-placement': true,
+            'symbol-z-order': 'source',
+            'symbol-sort-key': ['get', 'sortKey'],
           },
           paint: {
             'icon-opacity': fadeIn(ARROW_ZOOM),
+          },
+        })
+        // Atomic composite badge so an overlapping bus occludes the one behind.
+        m.addLayer({
+          id: 'bus-badge',
+          type: 'symbol',
+          source: 'buses',
+          minzoom: LABEL_FADE[0],
+          layout: {
+            'icon-image': [
+              'concat',
+              'badge|',
+              ['get', 'label'],
+              '|',
+              ['get', 'color'],
+              '|',
+              ['get', 'textColor'],
+            ],
+            'icon-size': [
+              'interpolate',
+              ['linear'],
+              ['zoom'],
+              LABEL_FADE[0],
+              0.75,
+              LABEL_FADE[1],
+              1,
+            ],
+            'icon-allow-overlap': true,
+            'icon-ignore-placement': true,
+            'symbol-z-order': 'source',
+            'symbol-sort-key': ['get', 'sortKey'],
+          },
+          paint: {
+            'icon-opacity': fadeIn(LABEL_FADE),
           },
         })
         // Zoomed out a bus is a dot of a few pixels; this invisible circle
@@ -904,6 +1035,9 @@ export function RouteMap({
           id: 'buses-hit',
           type: 'circle',
           source: 'buses',
+          layout: {
+            'circle-sort-key': ['get', 'sortKey'],
+          },
           paint: { 'circle-radius': 12, 'circle-opacity': 0 },
         })
         // The city names sit where every route meets, so they go back on
@@ -934,9 +1068,12 @@ export function RouteMap({
         if (p) popup(e.lngLat, textCard(String(p.code), String(p.name)))
       })
       let stopPopup: InstanceType<typeof Popup> | null = null
+      let busPopup: InstanceType<typeof Popup> | null = null
       m.on('click', 'stops-hit', (e) => {
         if (m.queryRenderedFeatures(e.point, { layers: ['buses-hit'] }).length)
           return
+        busPopup?.remove()
+        busPopup = null
         const f = e.features?.[0]
         if (f?.geometry.type !== 'Point') return
         // Pinned to the stop itself rather than where the tap landed, with
@@ -966,15 +1103,58 @@ export function RouteMap({
         })
       })
       m.on('click', 'buses-hit', (e) => {
-        const p = e.features?.[0]?.properties
-        if (p) setSelectedBus(String(p.no))
+        const seen = new Set<string>()
+        const items: Array<{
+          no: string
+          code: string
+          headsign: string
+          color: string
+          textColor: string
+        }> = []
+        for (const f of e.features ?? []) {
+          const p = f.properties
+          const no = String(p.no ?? '')
+          if (!no || seen.has(no)) continue
+          seen.add(no)
+          items.push({
+            no,
+            code: String(p.code ?? ''),
+            headsign: String(p.headsign ?? ''),
+            color: String(p.color ?? '#555555'),
+            textColor: String(p.textColor ?? '#ffffff'),
+          })
+        }
+        if (!items.length) return
+        busPopup?.remove()
+        busPopup = null
+        if (items.length === 1) {
+          setSelectedBus(items[0].no)
+          return
+        }
+        const opened = popup(
+          e.lngLat,
+          busPickerCard(items, (no) => {
+            opened.remove()
+            setSelectedBus(no)
+          }),
+          12,
+        )
+        busPopup = opened
+        opened.on('close', () => {
+          if (busPopup === opened) busPopup = null
+        })
       })
       // A click on the map closes an open sheet, and away from any bus
       // also the bus card.
       m.on('click', (e) => {
         setTab('map')
-        if (!m.queryRenderedFeatures(e.point, { layers: ['buses-hit'] }).length)
+        if (
+          !m.queryRenderedFeatures(e.point, { layers: ['buses-hit'] }).length
+        ) {
+          busPopup?.remove()
+          busPopup = null
           setSelectedBus(null)
+        }
       })
       for (const layer of ['routes', 'stops-hit', 'buses-hit']) {
         m.on(
@@ -1414,15 +1594,16 @@ export function RouteMap({
     )
     m.setFilter('bus-ping', selectedBus ? on : null)
     m.setPaintProperty('buses', 'circle-stroke-opacity', dim)
-    m.setPaintProperty('bus-label', 'text-opacity', fadeIn(LABEL_FADE, dim))
+    m.setPaintProperty('bus-badge', 'icon-opacity', fadeIn(LABEL_FADE, dim))
     m.setPaintProperty('bus-heading', 'icon-opacity', fadeIn(ARROW_ZOOM, dim))
-    // The selected bus is drawn last, on top of the others.
-    const top: ExpressionSpecification | undefined = selectedBus
-      ? ['case', on, 1, 0]
-      : undefined
-    m.setLayoutProperty('buses', 'circle-sort-key', top)
-    m.setLayoutProperty('bus-label', 'symbol-sort-key', top)
-    m.setLayoutProperty('bus-heading', 'symbol-sort-key', top)
+    // Keep non-selected buses in deterministic body-number order under the selected one.
+    const sortKey: ExpressionSpecification = selectedBus
+      ? ['case', on, SELECTED_SORT_KEY, ['get', 'sortKey']]
+      : ['get', 'sortKey']
+    m.setLayoutProperty('buses', 'circle-sort-key', sortKey)
+    m.setLayoutProperty('buses-hit', 'circle-sort-key', sortKey)
+    m.setLayoutProperty('bus-heading', 'symbol-sort-key', sortKey)
+    m.setLayoutProperty('bus-badge', 'symbol-sort-key', sortKey)
 
     const { bus, path } = focusRef.current
     if (!bus) return
