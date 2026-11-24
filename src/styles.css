@@ -112,6 +112,71 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* Picker popup when multiple stacked buses are tapped at the same spot. */
+.bus-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 14rem;
+  margin: 8px 0 0;
+  overflow-y: auto;
+}
+
+.bus-picker-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 44px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.bus-picker-item:hover {
+  background: var(--field);
+}
+
+.bus-picker-item:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.bus-picker-code {
+  flex-shrink: 0;
+  min-width: 2rem;
+  padding: 2px 7px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.5;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.bus-picker-headsign {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.bus-picker-no {
+  flex-shrink: 0;
+  color: var(--ink-soft);
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
 .maplibregl-popup-tip {
   display: none;
 }
